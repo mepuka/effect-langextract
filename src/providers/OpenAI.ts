@@ -2,7 +2,7 @@ import { Effect, Layer } from "effect"
 
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
-import { PrimedCachePolicy } from "../PrimedCache.js"
+import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
 import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface OpenAIConfigService {
@@ -38,16 +38,22 @@ export class OpenAIConfig extends Effect.Service<OpenAIConfig>()(
 
 export const OpenAIConfigLive: Layer.Layer<OpenAIConfig> = OpenAIConfig.Default
 
-export const OpenAILanguageModelLive: Layer.Layer<LanguageModel, never, OpenAIConfig> =
+export const OpenAILanguageModelLive: Layer.Layer<
+  LanguageModel,
+  never,
+  OpenAIConfig | PrimedCache
+> =
   Layer.effect(
     LanguageModel,
     Effect.gen(function* () {
       const config = yield* OpenAIConfig
+      const cache = yield* PrimedCache
       return LanguageModel.make(
         makeProviderLanguageModelService({
           provider: "openai",
           modelId: config.modelId,
-          requiresFenceOutput: config.formatType !== "json"
+          requiresFenceOutput: config.formatType !== "json",
+          cache
         })
       )
     })

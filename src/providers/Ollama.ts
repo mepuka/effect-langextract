@@ -2,7 +2,7 @@ import { Effect, Layer } from "effect"
 
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
-import { PrimedCachePolicy } from "../PrimedCache.js"
+import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
 import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface OllamaConfigService {
@@ -34,16 +34,22 @@ export class OllamaConfig extends Effect.Service<OllamaConfig>()(
 
 export const OllamaConfigLive: Layer.Layer<OllamaConfig> = OllamaConfig.Default
 
-export const OllamaLanguageModelLive: Layer.Layer<LanguageModel, never, OllamaConfig> =
+export const OllamaLanguageModelLive: Layer.Layer<
+  LanguageModel,
+  never,
+  OllamaConfig | PrimedCache
+> =
   Layer.effect(
     LanguageModel,
     Effect.gen(function* () {
       const config = yield* OllamaConfig
+      const cache = yield* PrimedCache
       return LanguageModel.make(
         makeProviderLanguageModelService({
           provider: "ollama",
           modelId: config.modelId,
-          requiresFenceOutput: false
+          requiresFenceOutput: false,
+          cache
         })
       )
     })

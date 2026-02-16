@@ -2,7 +2,7 @@ import { Effect, Layer } from "effect"
 
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
-import { PrimedCachePolicy } from "../PrimedCache.js"
+import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
 import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface GeminiConfigService {
@@ -40,16 +40,22 @@ export class GeminiConfig extends Effect.Service<GeminiConfig>()(
 
 export const GeminiConfigLive: Layer.Layer<GeminiConfig> = GeminiConfig.Default
 
-export const GeminiLanguageModelLive: Layer.Layer<LanguageModel, never, GeminiConfig> =
+export const GeminiLanguageModelLive: Layer.Layer<
+  LanguageModel,
+  never,
+  GeminiConfig | PrimedCache
+> =
   Layer.effect(
     LanguageModel,
     Effect.gen(function* () {
       const config = yield* GeminiConfig
+      const cache = yield* PrimedCache
       return LanguageModel.make(
         makeProviderLanguageModelService({
           provider: "gemini",
           modelId: config.modelId,
-          requiresFenceOutput: false
+          requiresFenceOutput: false,
+          cache
         })
       )
     })

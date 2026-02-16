@@ -5,6 +5,7 @@ import { TokenInterval } from "./Tokenizer.js"
 import type { TokenizerService } from "./Tokenizer.js"
 
 export class TextChunk extends Schema.Class<TextChunk>("TextChunk")({
+  documentIndex: Schema.Int,
   documentId: Schema.optionalWith(Schema.String, { exact: true }),
   chunkText: Schema.String,
   sanitizedChunkText: Schema.String,
@@ -56,6 +57,43 @@ export const makeBatches = <T>(
 
 const sanitizeChunkText = (text: string): string => text.trim()
 
+const tokenIntervalForChunk = (
+  tokenized: ReturnType<TokenizerService["tokenize"]>,
+  start: number,
+  end: number
+): TokenInterval => {
+  const tokens = tokenized.tokens
+  if (tokens.length === 0) {
+    return new TokenInterval({
+      startIndex: 0,
+      endIndex: 0
+    })
+  }
+
+  let startIndex = -1
+  let endIndex = -1
+  for (const token of tokens) {
+    const tokenStart = token.charInterval.startPos ?? 0
+    const tokenEnd = token.charInterval.endPos ?? tokenStart
+    if (startIndex < 0 && tokenEnd > start) {
+      startIndex = token.index
+    }
+    if (tokenStart < end) {
+      endIndex = token.index + 1
+    } else {
+      break
+    }
+  }
+
+  const boundedStart = Math.max(0, startIndex < 0 ? 0 : startIndex)
+  const boundedEnd = Math.max(boundedStart, endIndex < 0 ? boundedStart : endIndex)
+
+  return new TokenInterval({
+    startIndex: boundedStart,
+    endIndex: boundedEnd
+  })
+}
+
 export const chunkDocuments = (
   documents: ReadonlyArray<Document>,
   maxCharBuffer: number,
@@ -64,7 +102,7 @@ export const chunkDocuments = (
   Effect.sync(() => {
     const chunks: Array<TextChunk> = []
 
-    for (const document of documents) {
+    for (const [documentIndex, document] of documents.entries()) {
       const tokenized = tokenizer.tokenize(document.text)
       const text = document.text
 
@@ -74,16 +112,14 @@ export const chunkDocuments = (
 
         chunks.push(
           new TextChunk({
+            documentIndex,
             chunkText,
             sanitizedChunkText: sanitizeChunkText(chunkText),
             charInterval: new CharInterval({
               startPos: start,
               endPos: end
             }),
-            tokenInterval: new TokenInterval({
-              startIndex: 0,
-              endIndex: tokenized.tokens.length
-            }),
+            tokenInterval: tokenIntervalForChunk(tokenized, start, end),
             ...(document.documentId !== undefined
               ? { documentId: document.documentId }
               : {}),

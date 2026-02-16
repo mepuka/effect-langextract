@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest"
 
 import {
   PrimedCache,
+  PrimedCacheTest,
   PrimedCacheKey,
   ScoredOutput,
   TokenInterval,
@@ -51,6 +52,6 @@ describe("Service contracts", () => {
 
       expect(beforeDelete?.[0]?.output).toBe("ok")
       expect(afterDelete).toBeUndefined()
-    }).pipe(Effect.provide(PrimedCache.Default))
+    }).pipe(Effect.provide(PrimedCacheTest))
   )
 })

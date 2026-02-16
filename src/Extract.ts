@@ -85,6 +85,8 @@ export const extract = (options: ExtractOptions) =>
       contextWindowChars: options.contextWindowChars,
       additionalContext: options.additionalContext,
       maxBatchInputTokens: options.maxBatchInputTokens,
+      promptDescription: options.promptDescription,
+      promptExamples: options.examples,
       cachePolicy: new PrimedCachePolicy({
         enabled: options.primedCacheEnabled,
         namespace: options.primedCacheNamespace,

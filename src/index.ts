@@ -19,6 +19,7 @@ export * from "./Tokenizer.js"
 export * from "./Visualization.js"
 
 export * from "./providers/AiAdapters.js"
+export * from "./providers/Anthropic.js"
 export * from "./providers/Gemini.js"
 export * from "./providers/GeminiBatch.js"
 export * from "./providers/GeminiSchema.js"
