@@ -17,6 +17,7 @@ langextract/core/tokenizer.py      -> src/Tokenizer.ts          (Token, TokenInt
 langextract/core/schema.py         -> src/ProviderSchema.ts     (BaseSchema, FormatModeSchema, Constraint re-exports)
 langextract/core/format_handler.py -> src/FormatHandler.ts      (FormatHandler class for parsing/formatting model output)
 langextract/core/base_model.py     -> src/LanguageModel.ts      (LanguageModel service interface)
+langextract/cache.py               -> src/PrimedCache.ts        (Primed cache keying, lookup/store, invalidation)
 langextract/providers/patterns.py  -> src/providers/Patterns.ts (Provider regex pattern constants)
 langextract/providers/router.py    -> (eliminated -- replaced by Effect Layer composition)
 langextract/providers/builtin_registry.py -> (eliminated -- replaced by Effect Layer composition)
@@ -34,11 +35,13 @@ langextract/extraction.py          -> src/Extract.ts            (Top-level extra
 langextract/prompt_validation.py   -> src/PromptValidation.ts   (Validation of few-shot examples)
 langextract/io.py                  -> src/IO.ts                 (Dataset loading, JSONL I/O, URL download)
 langextract/visualization.py       -> src/Visualization.ts      (HTML visualization generation)
+langextract/rate_limits.py         -> src/RuntimeControl.ts     (Rate limiting, provider throughput controls)
 langextract/progress.py            -> (eliminated -- replaced by Effect logging)
 langextract/factory.py             -> (eliminated -- replaced by Effect Layer composition + Config)
 langextract/plugins.py             -> (eliminated -- no plugin system needed; use Layer composition)
 langextract/__init__.py            -> src/index.ts              (Public API re-exports)
 (new)                              -> src/Cli.ts                (@effect/cli command definitions)
+(new)                              -> src/providers/AiAdapters.ts (@effect/ai provider adapters for infer())
 ```
 
 ---
@@ -124,7 +127,10 @@ export class TokenizedText extends Schema.Class<TokenizedText>("TokenizedText")(
 // src/FormatType.ts
 export class ScoredOutput extends Schema.Class<ScoredOutput>("ScoredOutput")({
   score: Schema.optionalWith(Schema.Number, { exact: true }),
-  output: Schema.optionalWith(Schema.String, { exact: true })
+  output: Schema.optionalWith(Schema.String, { exact: true }),
+  provider: Schema.optionalWith(Schema.String, { exact: true }),
+  cacheStatus: Schema.optionalWith(Schema.Literal("miss", "hit"), { exact: true }),
+  cacheKey: Schema.optionalWith(Schema.String, { exact: true })
 }) {}
 ```
 
@@ -281,11 +287,46 @@ export class ValidationReport extends Schema.Class<ValidationReport>("Validation
 }
 ```
 
+### 2.18 Primed Cache Key
+
+```typescript
+// src/PrimedCache.ts
+export class PrimedCacheKey extends Schema.Class<PrimedCacheKey>("PrimedCacheKey")({
+  provider: Schema.String,
+  modelId: Schema.String,
+  promptFingerprint: Schema.String,
+  schemaFingerprint: Schema.optionalWith(Schema.String, { exact: true }),
+  temperature: Schema.optionalWith(Schema.Number, { exact: true }),
+  formatType: Schema.optionalWith(FormatType, { exact: true }),
+  promptVersion: Schema.String
+}) {}
+```
+
+### 2.19 Primed Cache Policy
+
+```typescript
+// src/PrimedCache.ts
+export class PrimedCachePolicy extends Schema.Class<PrimedCachePolicy>("PrimedCachePolicy")({
+  enabled: Schema.Boolean.pipe(Schema.withDefault(() => true)),
+  ttlSeconds: Schema.Int.pipe(Schema.withDefault(() => 60 * 60 * 24)),
+  namespace: Schema.String.pipe(Schema.withDefault(() => "langextract")),
+  deterministicOnly: Schema.Boolean.pipe(Schema.withDefault(() => true)),
+  allowStreamingWrites: Schema.Boolean.pipe(Schema.withDefault(() => false)),
+  maxEntries: Schema.Int.pipe(Schema.withDefault(() => 10_000))
+}) {}
+```
+
 ---
 
 ## 3. Service Definitions
 
 Each service is defined as a `Context.Tag` with an interface specifying methods, input types, and return types (including the Effect error channel).
+
+Testing requirement: every service contract in this section must have a matching test-layer implementation for `@effect/vitest` (`Layer.succeed` or `Layer.effect`) so contract tests can run with deterministic dependencies.
+
+Design rule: implementation modules MAY add helper functions, but exported runtime dependencies must always be service interfaces (`Context.Tag`) backed by Layers.
+
+Contract rule: service interfaces define capabilities only. They MUST NOT expose environment lookups, layer wiring, global mutable state, or provider SDK objects directly.
 
 ### 3.1 Tokenizer Service
 
@@ -312,12 +353,41 @@ export class Tokenizer extends Context.Tag("Tokenizer")<Tokenizer, TokenizerServ
 // src/LanguageModel.ts
 import { Context, Effect, Stream } from "effect"
 
+export interface InferOptions {
+  readonly cachePolicy?: PrimedCachePolicy | undefined
+  readonly providerConcurrency?: number | undefined
+  readonly providerOptions?: Record<string, unknown> | undefined
+  readonly passNumber?: number | undefined
+  readonly contextWindowChars?: number | undefined
+  readonly additionalContextHash?: string | undefined
+  readonly preferStructuredOutput?: boolean | undefined
+  readonly stream?: boolean | undefined
+}
+
 export interface LanguageModelService {
   /** Run inference on a batch of prompts. Returns one ScoredOutput[] per prompt. */
   readonly infer: (
     batchPrompts: ReadonlyArray<string>,
-    options?: Record<string, unknown>
+    options?: InferOptions
   ) => Effect.Effect<ReadonlyArray<ReadonlyArray<ScoredOutput>>, InferenceRuntimeError>
+
+  /** Native Effect AI text path for providers that support it */
+  readonly generateText: (
+    prompt: string,
+    options?: InferOptions
+  ) => Effect.Effect<ScoredOutput, InferenceRuntimeError>
+
+  /** Native Effect AI structured path for schema-constrained extraction */
+  readonly generateObject: (
+    prompt: string,
+    options?: InferOptions
+  ) => Effect.Effect<Record<string, unknown>, InferenceRuntimeError>
+
+  /** Optional stream path for progressive UI/debug output */
+  readonly streamText: (
+    prompt: string,
+    options?: InferOptions
+  ) => Stream.Stream<string, InferenceRuntimeError>
 
   /** The model identifier */
   readonly modelId: string
@@ -429,9 +499,14 @@ export interface AnnotatorService {
 export interface AnnotateOptions {
   readonly maxCharBuffer: number
   readonly batchLength: number
+  readonly batchConcurrency: number
+  readonly providerConcurrency: number
+  readonly passNumber?: number | undefined
   readonly extractionPasses: number
   readonly contextWindowChars?: number | undefined
   readonly additionalContext?: string | undefined
+  readonly maxBatchInputTokens?: number | undefined
+  readonly cachePolicy?: PrimedCachePolicy | undefined
 }
 
 export class Annotator extends Context.Tag("Annotator")<Annotator, AnnotatorService>() {}
@@ -484,11 +559,53 @@ export class PromptValidator extends Context.Tag("PromptValidator")<
 >() {}
 ```
 
+### 3.9 PrimedCache Service
+
+```typescript
+// src/PrimedCache.ts
+import { Context, Effect } from "effect"
+
+export interface PrimedCacheService {
+  readonly get: (
+    key: PrimedCacheKey
+  ) => Effect.Effect<ReadonlyArray<ScoredOutput> | undefined, PrimedCacheError>
+
+  readonly put: (
+    key: PrimedCacheKey,
+    value: ReadonlyArray<ScoredOutput>
+  ) => Effect.Effect<void, PrimedCacheError>
+
+  readonly invalidate: (
+    key: PrimedCacheKey
+  ) => Effect.Effect<void, PrimedCacheError>
+
+  readonly clearNamespace: (
+    namespace: string
+  ) => Effect.Effect<void, PrimedCacheError>
+}
+
+export class PrimedCache extends Context.Tag("PrimedCache")<PrimedCache, PrimedCacheService>() {}
+```
+
 ---
 
 ## 4. Layer Definitions
 
 Each service has one or more Layer implementations. Layers are constructed with `Layer.effect` or `Layer.succeed` and composed with `Layer.provide`.
+
+### 4.0 Live/Test Layer Pattern
+
+Every service must ship with two layer entry points:
+
+- `<Service>Live` in `src/**` for production/runtime composition.
+- `<Service>Test` in `test/layers/**` for deterministic service substitution in `@effect/vitest`.
+
+Layer rules:
+
+- `Live` layers can depend on platform services (`HttpClient`, `FileSystem`, `KeyValueStore`, provider SDK adapters).
+- `Test` layers must avoid network and filesystem unless the test explicitly requests an integration profile.
+- Shared resources (cache stores, rate limiters, worker pools) must be wrapped with `Layer.memoize` to avoid duplicate initialization.
+- Test suites should compose with `layer(...)` and `it.layer(...)`, replacing only the services under test while preserving the remaining dependency graph.
 
 ### 4.1 Tokenizer Layers
 
@@ -515,71 +632,126 @@ export const UnicodeTokenizerLive: Layer.Layer<Tokenizer> =
 ### 4.2 LanguageModel Layers
 
 ```typescript
-// src/providers/Gemini.ts
+// src/providers/AiAdapters.ts
+import { Effect, Layer, Stream } from "effect"
+import * as AiLanguageModel from "@effect/ai/LanguageModel"
+import { OpenAiLanguageModel } from "@effect/ai-openai"
+import { GoogleLanguageModel } from "@effect/ai-google"
 
-export const GeminiLanguageModelLive: Layer.Layer<LanguageModel, InferenceConfigError, GeminiConfig> =
-  Layer.effect(
-    LanguageModel,
-    Effect.gen(function* () {
-      const config = yield* GeminiConfig
-      // Validate config, initialize client
-      return {
-        modelId: config.modelId,
-        requiresFenceOutput: false,
-        schema: undefined,
-        infer: (prompts, options) =>
-          Effect.tryPromise({
-            try: () => callGeminiApi(prompts, config, options),
-            catch: (error) => new InferenceRuntimeError({ message: String(error) })
-          })
-      }
-    })
-  )
+const inferWithPrimedCache = (
+  provider: string,
+  modelId: string,
+  defaultProviderConcurrency: number,
+  cache: PrimedCacheService,
+  policy: PrimedCachePolicy,
+  run: (prompt: string, options?: InferOptions) => Effect.Effect<ScoredOutput, InferenceRuntimeError>
+) =>
+  (prompts: ReadonlyArray<string>, options?: InferOptions) =>
+    // Provider concurrency is separate from pipeline batch concurrency.
+    // This avoids accidental fan-out (batchConcurrency x providerConcurrency).
+    Effect.forEach(
+      prompts,
+      (prompt) => {
+        const key = makePrimedCacheKey({ provider, modelId, prompt, options, policy })
+        return cache.get(key).pipe(
+          Effect.flatMap((hit) =>
+            hit !== undefined
+              ? Effect.succeed(hit.map((o) => ({ ...o, cacheStatus: "hit", cacheKey: key.promptFingerprint })))
+              : run(prompt, options).pipe(
+                  Effect.tap((value) => cache.put(key, [{ ...value, cacheStatus: "miss", cacheKey: key.promptFingerprint }])),
+                  Effect.map((value) => [value])
+                )
+          )
+        )
+      },
+      { concurrency: options?.providerConcurrency ?? defaultProviderConcurrency }
+    )
+
+export const GeminiLanguageModelLive: Layer.Layer<LanguageModel, InferenceConfigError, GeminiConfig | PrimedCache> =
+  Layer.effect(LanguageModel, Effect.gen(function* () {
+    const config = yield* GeminiConfig
+    const cache = yield* PrimedCache
+    const model = GoogleLanguageModel.model(config.modelId)
+    const policy = config.primedCachePolicy
+
+    const generateText = (prompt: string, options?: InferOptions) =>
+      AiLanguageModel.generateText(model, { prompt, providerOptions: options?.providerOptions }).pipe(
+        Effect.map((r) => new ScoredOutput({ output: r.text, provider: "gemini" })),
+        Effect.mapError((error) => new InferenceRuntimeError({ message: String(error), provider: "gemini" }))
+      )
+
+    return {
+      modelId: config.modelId,
+      requiresFenceOutput: false,
+      schema: undefined,
+      infer: inferWithPrimedCache(
+        "gemini",
+        config.modelId,
+        config.providerConcurrency,
+        cache,
+        policy,
+        generateText
+      ),
+      generateText,
+      generateObject: (prompt, options) =>
+        AiLanguageModel.generateObject(model, { prompt, providerOptions: options?.providerOptions }),
+      streamText: (prompt, options) =>
+        AiLanguageModel.streamText(model, { prompt, providerOptions: options?.providerOptions }).pipe(
+          Stream.map((part) => part._tag === "TextDelta" ? part.delta : "")
+        )
+    } satisfies LanguageModelService
+  }))
+
+export const OpenAILanguageModelLive: Layer.Layer<LanguageModel, InferenceConfigError, OpenAIConfig | PrimedCache> =
+  Layer.effect(LanguageModel, Effect.gen(function* () {
+    const config = yield* OpenAIConfig
+    const cache = yield* PrimedCache
+    const model = OpenAiLanguageModel.model(config.modelId)
+    const policy = config.primedCachePolicy
+
+    const generateText = (prompt: string, options?: InferOptions) =>
+      AiLanguageModel.generateText(model, { prompt, providerOptions: options?.providerOptions }).pipe(
+        Effect.map((r) => new ScoredOutput({ output: r.text, provider: "openai" })),
+        Effect.mapError((error) => new InferenceRuntimeError({ message: String(error), provider: "openai" }))
+      )
+
+    return {
+      modelId: config.modelId,
+      requiresFenceOutput: config.formatType !== "json",
+      schema: undefined,
+      infer: inferWithPrimedCache(
+        "openai",
+        config.modelId,
+        config.providerConcurrency,
+        cache,
+        policy,
+        generateText
+      ),
+      generateText,
+      generateObject: (prompt, options) =>
+        AiLanguageModel.generateObject(model, { prompt, providerOptions: options?.providerOptions }),
+      streamText: (prompt, options) =>
+        AiLanguageModel.streamText(model, { prompt, providerOptions: options?.providerOptions }).pipe(
+          Stream.map((part) => part._tag === "TextDelta" ? part.delta : "")
+        )
+    } satisfies LanguageModelService
+  }))
+
+// Ollama keeps a custom adapter over HttpClient, but MUST use the same inferWithPrimedCache path
+// so primed cache semantics are provider-agnostic.
 ```
 
-```typescript
-// src/providers/OpenAI.ts
+Provider requirements:
 
-export const OpenAILanguageModelLive: Layer.Layer<LanguageModel, InferenceConfigError, OpenAIConfig> =
-  Layer.effect(
-    LanguageModel,
-    Effect.gen(function* () {
-      const config = yield* OpenAIConfig
-      return {
-        modelId: config.modelId,
-        requiresFenceOutput: config.formatType !== "json",
-        schema: undefined,
-        infer: (prompts, options) =>
-          Effect.tryPromise({
-            try: () => callOpenAIApi(prompts, config, options),
-            catch: (error) => new InferenceRuntimeError({ message: String(error) })
-          })
-      }
-    })
-  )
-```
-
-```typescript
-// src/providers/Ollama.ts
-
-export const OllamaLanguageModelLive: Layer.Layer<LanguageModel, InferenceConfigError, OllamaConfig> =
-  Layer.effect(
-    LanguageModel,
-    Effect.gen(function* () {
-      const config = yield* OllamaConfig
-      return {
-        modelId: config.modelId,
-        requiresFenceOutput: false,
-        schema: undefined,
-        infer: (prompts, options) =>
-          Effect.tryPromise({
-            try: () => callOllamaApi(prompts, config, options),
-            catch: (error) => new InferenceRuntimeError({ message: String(error) })
-          })
-      }
-    })
-  )
-```
+- Primed caching is mandatory in all providers through `PrimedCache`; providers MUST not bypass it.
+- Cache keys MUST include provider, model ID, prompt fingerprint, schema fingerprint, temperature, prompt version, and execution context (`passNumber`, `contextWindowChars`, `additionalContextHash`).
+- If `deterministicOnly = true`, providers bypass cache writes when sampling is non-deterministic (e.g., `temperature` unset/high).
+- Provider concurrency defaults to provider config (`*_PROVIDER_CONCURRENCY`) and can be overridden per call via `InferOptions.providerConcurrency`.
+- Provider-specific metadata MUST be part of key derivation:
+  - Gemini: include `vertexai`, `project`, `location`, and safety/tool configuration.
+  - OpenAI: include `baseUrl`, `organization`, response format mode, and tool-choice mode.
+  - Ollama: include `baseUrl`, model digest/tag, and timeout profile.
+  - Anthropic (when enabled through `@effect/ai-anthropic`): propagate prompt/message `cacheControl` metadata as part of priming strategy.
 
 ### 4.3 FormatHandler Layer
 
@@ -656,6 +828,50 @@ export const VisualizerLive: Layer.Layer<Visualizer> =
   })
 ```
 
+### 4.7 PrimedCache + Runtime Control Layers
+
+```typescript
+// src/PrimedCache.ts
+import { Layer } from "effect"
+import * as PersistedCache from "@effect/experimental/PersistedCache"
+import * as Persistence from "@effect/experimental/Persistence"
+import * as BunKeyValueStore from "@effect/platform-bun/BunKeyValueStore"
+
+// Durable store backing on Bun filesystem.
+export const PrimedCachePersistenceLive =
+  Persistence.layerResult(Persistence.ResultPersistence, BunKeyValueStore.layerFileSystem)
+
+// Two-tier cache: in-memory fast path + persisted backing.
+export const PrimedCacheLive: Layer.Layer<PrimedCache, PrimedCacheError> =
+  PersistedCache.layer({
+    timeToLive: "24 hours",
+    capacity: 10_000
+  }).pipe(Layer.provide(PrimedCachePersistenceLive))
+```
+
+```typescript
+// src/RuntimeControl.ts
+import * as RateLimiter from "@effect/experimental/RateLimiter"
+import * as RequestResolver from "@effect/experimental/RequestResolver"
+
+// Provider-scoped limiter. Use one layer per provider when quotas differ.
+export const ProviderRateLimiterLive = RateLimiter.layer({
+  algorithm: "token-bucket",
+  limit: 60,
+  window: "1 minute"
+})
+
+// Optional request coalescing for identical in-flight prompts.
+export const PromptRequestResolverLive = RequestResolver.dataLoader(/* batched prompt resolver */)
+```
+
+Runtime requirements:
+
+- `PrimedCacheLive` is required by all `LanguageModel` layers in production.
+- `Layer.memoize` MUST be used for cache/rate-limiter layers to avoid duplicate initialization per command.
+- Cache, limiter, and resolver layers MUST be independently swappable in tests.
+- Test suites MUST provide these dependencies via `@effect/vitest` `layer(...)` / `it.layer(...)` helpers rather than ad-hoc globals.
+
 ---
 
 ## 5. Error Model
@@ -709,6 +925,24 @@ export class InternalError extends Schema.TaggedError<InternalError>()(
 export class ProviderError extends Schema.TaggedError<ProviderError>()(
   "ProviderError",
   { message: Schema.String }
+) {}
+
+/** Primed cache read/write/invalidation errors */
+export class PrimedCacheError extends Schema.TaggedError<PrimedCacheError>()(
+  "PrimedCacheError",
+  {
+    message: Schema.String,
+    key: Schema.optionalWith(Schema.String, { exact: true })
+  }
+) {}
+
+/** Provider rate-limit breaches */
+export class ProviderRateLimitError extends Schema.TaggedError<ProviderRateLimitError>()(
+  "ProviderRateLimitError",
+  {
+    message: Schema.String,
+    provider: Schema.optionalWith(Schema.String, { exact: true })
+  }
 ) {}
 
 /** Schema validation errors */
@@ -811,12 +1045,22 @@ export const ExtractionConfig = Config.all({
   maxCharBuffer: Config.integer("MAX_CHAR_BUFFER").pipe(Config.withDefault(1000)),
   temperature: Config.number("TEMPERATURE").pipe(Config.option),
   batchLength: Config.integer("BATCH_LENGTH").pipe(Config.withDefault(10)),
-  maxWorkers: Config.integer("MAX_WORKERS").pipe(Config.withDefault(10)),
+  batchConcurrency: Config.integer("BATCH_CONCURRENCY").pipe(Config.withDefault(1)),
+  providerConcurrency: Config.integer("PROVIDER_CONCURRENCY").pipe(Config.withDefault(8)),
+  maxBatchInputTokens: Config.integer("MAX_BATCH_INPUT_TOKENS").pipe(Config.option),
   extractionPasses: Config.integer("EXTRACTION_PASSES").pipe(Config.withDefault(1)),
   contextWindowChars: Config.integer("CONTEXT_WINDOW_CHARS").pipe(Config.option),
   formatType: Config.literal("json", "yaml")("FORMAT_TYPE").pipe(Config.withDefault("json" as const)),
   useFences: Config.boolean("USE_FENCES").pipe(Config.option),
   useSchemaConstraints: Config.boolean("USE_SCHEMA_CONSTRAINTS").pipe(Config.withDefault(true)),
+  primedCacheEnabled: Config.boolean("PRIMED_CACHE_ENABLED").pipe(Config.withDefault(true)),
+  primedCacheDir: Config.string("PRIMED_CACHE_DIR").pipe(Config.withDefault(".cache/langextract")),
+  primedCacheNamespace: Config.string("PRIMED_CACHE_NAMESPACE").pipe(Config.withDefault("langextract")),
+  primedCacheTtlSeconds: Config.integer("PRIMED_CACHE_TTL_SECONDS").pipe(Config.withDefault(86400)),
+  primedCacheDeterministicOnly: Config.boolean("PRIMED_CACHE_DETERMINISTIC_ONLY").pipe(
+    Config.withDefault(true)
+  ),
+  clearPrimedCacheOnStart: Config.boolean("CLEAR_PRIMED_CACHE_ON_START").pipe(Config.withDefault(false)),
   debug: Config.boolean("DEBUG").pipe(Config.withDefault(false))
 })
 ```
@@ -831,10 +1075,12 @@ export class GeminiConfig extends Context.Tag("GeminiConfig")<
     readonly modelId: string
     readonly apiKey: string
     readonly temperature: number
-    readonly maxWorkers: number
+    readonly providerConcurrency: number
     readonly vertexai: boolean
     readonly project?: string | undefined
     readonly location?: string | undefined
+    readonly primedCacheScope: "request" | "session"
+    readonly primedCachePolicy: PrimedCachePolicy
   }
 >() {}
 
@@ -846,10 +1092,25 @@ export const GeminiConfigLive: Layer.Layer<GeminiConfig> = Layer.effect(
       Config.orElse(() => Config.string("LANGEXTRACT_API_KEY"))
     ),
     temperature: Config.number("GEMINI_TEMPERATURE").pipe(Config.withDefault(0.0)),
-    maxWorkers: Config.integer("GEMINI_MAX_WORKERS").pipe(Config.withDefault(10)),
+    providerConcurrency: Config.integer("GEMINI_PROVIDER_CONCURRENCY").pipe(Config.withDefault(8)),
     vertexai: Config.boolean("GEMINI_VERTEXAI").pipe(Config.withDefault(false)),
     project: Config.string("GOOGLE_CLOUD_PROJECT").pipe(Config.option),
-    location: Config.string("GEMINI_LOCATION").pipe(Config.option)
+    location: Config.string("GEMINI_LOCATION").pipe(Config.option),
+    primedCacheScope: Config.literal("request", "session")("GEMINI_PRIMED_CACHE_SCOPE").pipe(
+      Config.withDefault("session" as const)
+    ),
+    primedCachePolicy: Config.all({
+      enabled: Config.boolean("GEMINI_PRIMED_CACHE_ENABLED").pipe(Config.withDefault(true)),
+      ttlSeconds: Config.integer("GEMINI_PRIMED_CACHE_TTL_SECONDS").pipe(Config.withDefault(86400)),
+      namespace: Config.string("GEMINI_PRIMED_CACHE_NAMESPACE").pipe(Config.withDefault("gemini")),
+      deterministicOnly: Config.boolean("GEMINI_PRIMED_CACHE_DETERMINISTIC_ONLY").pipe(
+        Config.withDefault(true)
+      ),
+      allowStreamingWrites: Config.boolean("GEMINI_PRIMED_CACHE_ALLOW_STREAM_WRITES").pipe(
+        Config.withDefault(false)
+      ),
+      maxEntries: Config.integer("GEMINI_PRIMED_CACHE_MAX_ENTRIES").pipe(Config.withDefault(10000))
+    })
   }).pipe(
     Effect.map((c) => ({
       ...c,
@@ -870,8 +1131,10 @@ export class OpenAIConfig extends Context.Tag("OpenAIConfig")<
     readonly baseUrl?: string | undefined
     readonly organization?: string | undefined
     readonly temperature?: number | undefined
-    readonly maxWorkers: number
+    readonly providerConcurrency: number
     readonly formatType: FormatType
+    readonly primedCacheScope: "request" | "session"
+    readonly primedCachePolicy: PrimedCachePolicy
   }
 >() {}
 
@@ -885,8 +1148,23 @@ export const OpenAIConfigLive: Layer.Layer<OpenAIConfig> = Layer.effect(
     baseUrl: Config.string("OPENAI_BASE_URL").pipe(Config.option),
     organization: Config.string("OPENAI_ORGANIZATION").pipe(Config.option),
     temperature: Config.number("OPENAI_TEMPERATURE").pipe(Config.option),
-    maxWorkers: Config.integer("OPENAI_MAX_WORKERS").pipe(Config.withDefault(10)),
-    formatType: Config.literal("json", "yaml")("OPENAI_FORMAT_TYPE").pipe(Config.withDefault("json" as const))
+    providerConcurrency: Config.integer("OPENAI_PROVIDER_CONCURRENCY").pipe(Config.withDefault(8)),
+    formatType: Config.literal("json", "yaml")("OPENAI_FORMAT_TYPE").pipe(Config.withDefault("json" as const)),
+    primedCacheScope: Config.literal("request", "session")("OPENAI_PRIMED_CACHE_SCOPE").pipe(
+      Config.withDefault("session" as const)
+    ),
+    primedCachePolicy: Config.all({
+      enabled: Config.boolean("OPENAI_PRIMED_CACHE_ENABLED").pipe(Config.withDefault(true)),
+      ttlSeconds: Config.integer("OPENAI_PRIMED_CACHE_TTL_SECONDS").pipe(Config.withDefault(86400)),
+      namespace: Config.string("OPENAI_PRIMED_CACHE_NAMESPACE").pipe(Config.withDefault("openai")),
+      deterministicOnly: Config.boolean("OPENAI_PRIMED_CACHE_DETERMINISTIC_ONLY").pipe(
+        Config.withDefault(true)
+      ),
+      allowStreamingWrites: Config.boolean("OPENAI_PRIMED_CACHE_ALLOW_STREAM_WRITES").pipe(
+        Config.withDefault(false)
+      ),
+      maxEntries: Config.integer("OPENAI_PRIMED_CACHE_MAX_ENTRIES").pipe(Config.withDefault(10000))
+    })
   }).pipe(Effect.map((c) => ({
     ...c,
     baseUrl: c.baseUrl.pipe(Option.getOrUndefined),
@@ -905,6 +1183,9 @@ export class OllamaConfig extends Context.Tag("OllamaConfig")<
     readonly baseUrl: string
     readonly formatType: FormatType
     readonly timeout: number
+    readonly providerConcurrency: number
+    readonly primedCacheScope: "request" | "session"
+    readonly primedCachePolicy: PrimedCachePolicy
   }
 >() {}
 
@@ -914,10 +1195,33 @@ export const OllamaConfigLive: Layer.Layer<OllamaConfig> = Layer.effect(
     modelId: Config.string("OLLAMA_MODEL_ID"),
     baseUrl: Config.string("OLLAMA_BASE_URL").pipe(Config.withDefault("http://localhost:11434")),
     formatType: Config.literal("json", "yaml")("OLLAMA_FORMAT_TYPE").pipe(Config.withDefault("json" as const)),
-    timeout: Config.integer("OLLAMA_TIMEOUT").pipe(Config.withDefault(120))
+    timeout: Config.integer("OLLAMA_TIMEOUT").pipe(Config.withDefault(120)),
+    providerConcurrency: Config.integer("OLLAMA_PROVIDER_CONCURRENCY").pipe(Config.withDefault(8)),
+    primedCacheScope: Config.literal("request", "session")("OLLAMA_PRIMED_CACHE_SCOPE").pipe(
+      Config.withDefault("session" as const)
+    ),
+    primedCachePolicy: Config.all({
+      enabled: Config.boolean("OLLAMA_PRIMED_CACHE_ENABLED").pipe(Config.withDefault(true)),
+      ttlSeconds: Config.integer("OLLAMA_PRIMED_CACHE_TTL_SECONDS").pipe(Config.withDefault(86400)),
+      namespace: Config.string("OLLAMA_PRIMED_CACHE_NAMESPACE").pipe(Config.withDefault("ollama")),
+      deterministicOnly: Config.boolean("OLLAMA_PRIMED_CACHE_DETERMINISTIC_ONLY").pipe(
+        Config.withDefault(true)
+      ),
+      allowStreamingWrites: Config.boolean("OLLAMA_PRIMED_CACHE_ALLOW_STREAM_WRITES").pipe(
+        Config.withDefault(false)
+      ),
+      maxEntries: Config.integer("OLLAMA_PRIMED_CACHE_MAX_ENTRIES").pipe(Config.withDefault(10000))
+    })
   })
 )
 ```
+
+Cache policy rules:
+
+- `*_PRIMED_CACHE_NAMESPACE` isolates provider cache entries to avoid cross-provider collisions.
+- `*_PRIMED_CACHE_SCOPE=request` allows per-command ephemeral priming; `session` enables persistent reuse across runs.
+- `*_PRIMED_CACHE_DETERMINISTIC_ONLY=true` is the default safety guard and should only be disabled explicitly for recall-driven workflows.
+- `BATCH_CONCURRENCY` and `*_PROVIDER_CONCURRENCY` are independent controls. Effective request fan-out is bounded by `batchConcurrency × providerConcurrency`.
 
 ---
 
@@ -968,9 +1272,17 @@ const extractOptions = {
     Options.withDefault(10),
     Options.withDescription("Number of chunks per batch")
   ),
-  maxWorkers: Options.integer("max-workers").pipe(
-    Options.withDefault(10),
-    Options.withDescription("Max parallel workers")
+  batchConcurrency: Options.integer("batch-concurrency").pipe(
+    Options.withDefault(1),
+    Options.withDescription("How many batches can run in parallel")
+  ),
+  providerConcurrency: Options.integer("provider-concurrency").pipe(
+    Options.withDefault(8),
+    Options.withDescription("Max parallel prompts per provider call")
+  ),
+  maxBatchInputTokens: Options.integer("max-batch-input-tokens").pipe(
+    Options.optional,
+    Options.withDescription("Optional token cap per batch including prompt overhead")
   ),
   extractionPasses: Options.integer("passes").pipe(
     Options.withDefault(1),
@@ -997,6 +1309,30 @@ const extractOptions = {
     Options.optional,
     Options.withDescription("Sampling temperature")
   ),
+  primedCacheEnabled: Options.boolean("cache").pipe(
+    Options.withDefault(true),
+    Options.withDescription("Enable primed cache reads/writes")
+  ),
+  primedCacheDir: Options.directory("cache-dir").pipe(
+    Options.withDefault(".cache/langextract"),
+    Options.withDescription("Filesystem directory for persisted primed cache")
+  ),
+  primedCacheNamespace: Options.text("cache-namespace").pipe(
+    Options.withDefault("langextract"),
+    Options.withDescription("Cache namespace to isolate entries by run/workload")
+  ),
+  primedCacheTtlSeconds: Options.integer("cache-ttl-seconds").pipe(
+    Options.withDefault(86400),
+    Options.withDescription("TTL for primed cache entries")
+  ),
+  primedCacheDeterministicOnly: Options.boolean("cache-deterministic-only").pipe(
+    Options.withDefault(true),
+    Options.withDescription("Only write cache entries for deterministic model calls")
+  ),
+  clearPrimedCacheOnStart: Options.boolean("clear-cache").pipe(
+    Options.withDefault(false),
+    Options.withDescription("Clear provider cache namespace before running extraction")
+  ),
   debug: Options.boolean("debug").pipe(
     Options.withDefault(false),
     Options.withDescription("Enable debug logging")
@@ -1011,9 +1347,12 @@ const extractCommand = Command.make("extract", extractOptions, (args) =>
   Effect.gen(function* () {
     // 1. Load examples from file
     // 2. Determine provider from model ID
-    // 3. Build Layer stack (LanguageModel + Tokenizer + FormatHandler + Resolver + PromptBuilder + Annotator)
-    // 4. Run extraction pipeline
-    // 5. Save results to JSONL
+    // 3. Build cache policy from flags + env config
+    // 4. Build Layer stack (PrimedCache + LanguageModel + Tokenizer + FormatHandler + Resolver + PromptBuilder + Annotator)
+    // 5. Validate concurrency controls (batchConcurrency x providerConcurrency)
+    // 6. Optionally clear cache namespace when --clear-cache=true
+    // 7. Run extraction pipeline
+    // 8. Save results to JSONL
   })
 )
 ```
@@ -1060,6 +1399,79 @@ export const cli = Command.run(command, {
 
 ## 8. Pipeline Flow (Effect Style)
 
+### 8.0 Shared Helpers
+
+```typescript
+// src/Annotator.ts
+import { createHash } from "node:crypto"
+import { Effect } from "effect"
+
+type BatchBuildOptions = {
+  readonly targetBatchLength: number
+  readonly maxBatchInputTokens?: number | undefined
+  readonly estimateTokens: (chunk: TextChunk) => number
+}
+
+const hashText = (text: string): string =>
+  createHash("sha256").update(text).digest("hex")
+
+const estimatePromptTokens = (
+  promptBuilder: PromptBuilderService,
+  chunk: TextChunk
+): number => {
+  // Heuristic estimate; implementation can swap in provider tokenizer.
+  const prompt = promptBuilder.buildPrompt(
+    chunk.chunkText,
+    chunk.documentId ?? "",
+    chunk.additionalContext
+  )
+  return Math.ceil(prompt.length / 4)
+}
+
+const makeBatches = (
+  chunks: ReadonlyArray<TextChunk>,
+  options: BatchBuildOptions
+): ReadonlyArray<ReadonlyArray<TextChunk>> => {
+  const batches: Array<Array<TextChunk>> = []
+  let current: Array<TextChunk> = []
+  let currentTokenCount = 0
+
+  const flush = () => {
+    if (current.length > 0) {
+      batches.push(current)
+      current = []
+      currentTokenCount = 0
+    }
+  }
+
+  for (const chunk of chunks) {
+    const estimated = options.estimateTokens(chunk)
+    const wouldExceedLength = current.length >= options.targetBatchLength
+    const wouldExceedTokens = options.maxBatchInputTokens !== undefined &&
+      currentTokenCount + estimated > options.maxBatchInputTokens
+
+    if (wouldExceedLength || wouldExceedTokens) {
+      flush()
+    }
+
+    current.push(chunk)
+    currentTokenCount += estimated
+  }
+
+  flush()
+  return batches
+}
+
+declare const annotateDocumentsSinglePassFromPlan: (
+  batchPlan: ReadonlyArray<ReadonlyArray<TextChunk>>,
+  options: AnnotateOptions
+) => Effect.Effect<
+  ReadonlyArray<AnnotatedDocument>,
+  LangExtractError,
+  LanguageModel | Resolver | Tokenizer | PromptBuilder
+>
+```
+
 ### 8.1 Main Extraction Pipeline
 
 ```typescript
@@ -1093,14 +1505,29 @@ export const extract = (options: ExtractOptions) =>
       ? yield* downloadText(text)
       : text
 
-    // 5. Run annotation
+    // 5. Optional cache clear
+    const primedCache = yield* PrimedCache
+    if (opts.clearPrimedCacheOnStart) {
+      yield* primedCache.clearNamespace(opts.primedCacheNamespace)
+    }
+
+    // 6. Run annotation
     const annotator = yield* Annotator
     const result = yield* annotator.annotateText(inputText, {
       maxCharBuffer: opts.maxCharBuffer,
       batchLength: opts.batchLength,
+      batchConcurrency: opts.batchConcurrency,
+      providerConcurrency: opts.providerConcurrency,
+      maxBatchInputTokens: opts.maxBatchInputTokens,
       extractionPasses: opts.extractionPasses,
       contextWindowChars: opts.contextWindowChars,
-      additionalContext: opts.additionalContext
+      additionalContext: opts.additionalContext,
+      cachePolicy: new PrimedCachePolicy({
+        enabled: opts.primedCacheEnabled,
+        namespace: opts.primedCacheNamespace,
+        ttlSeconds: opts.primedCacheTtlSeconds,
+        deterministicOnly: opts.primedCacheDeterministicOnly
+      })
     })
 
     return result
@@ -1124,11 +1551,16 @@ const annotateDocumentsSinglePass = (
     // 1. Chunk all documents
     const chunks = yield* chunkDocuments(documents, options.maxCharBuffer, tokenizer)
 
-    // 2. Batch chunks
-    const batches = makeBatches(chunks, options.batchLength)
+    // 2. Build token-aware batches (chunk size + prompt overhead)
+    const batches = makeBatches(chunks, {
+      targetBatchLength: options.batchLength,
+      maxBatchInputTokens: options.maxBatchInputTokens,
+      estimateTokens: (chunk) => estimatePromptTokens(promptBuilder, chunk)
+    })
 
     // 3. Process batches with bounded concurrency
     const perDoc = new Map<string, Array<Extraction>>()
+    const alignmentMemo = new Map<string, ReadonlyArray<Extraction>>()
 
     yield* Effect.forEach(batches, (batch) =>
       Effect.gen(function* () {
@@ -1141,8 +1573,19 @@ const annotateDocumentsSinglePass = (
           )
         )
 
-        // LLM inference (this is where the actual API call happens)
-        const outputs = yield* lm.infer(prompts)
+        // LLM inference (cache-aware; provider layer owns get/put behavior)
+        const outputs = yield* lm.infer(prompts, {
+          cachePolicy: options.cachePolicy,
+          passNumber: options.passNumber ?? 1,
+          contextWindowChars: options.contextWindowChars,
+          additionalContextHash: options.additionalContext
+            ? hashText(options.additionalContext)
+            : undefined,
+          providerConcurrency: options.providerConcurrency,
+          providerOptions: {
+            providerConcurrency: options.providerConcurrency
+          }
+        })
 
         // Resolve and align each chunk's output
         yield* Effect.forEach(
@@ -1156,22 +1599,27 @@ const annotateDocumentsSinglePass = (
                 )
               }
 
-              const resolved = yield* resolver.resolve(firstOutput.output)
-              const aligned = yield* resolver.align(
-                resolved,
-                chunk.chunkText,
-                chunk.tokenInterval.startIndex,
-                chunk.charInterval.startPos ?? 0
-              )
+              const alignmentKey = `${hashText(chunk.chunkText)}:${hashText(firstOutput.output)}`
+              const aligned = alignmentMemo.get(alignmentKey) ?? (yield* Effect.gen(function* () {
+                const resolved = yield* resolver.resolve(firstOutput.output)
+                const freshAligned = yield* resolver.align(
+                  resolved,
+                  chunk.chunkText,
+                  chunk.tokenInterval.startIndex,
+                  chunk.charInterval.startPos ?? 0
+                )
+                alignmentMemo.set(alignmentKey, freshAligned)
+                return freshAligned
+              }))
 
               const docId = chunk.documentId ?? ""
               const existing = perDoc.get(docId) ?? []
               perDoc.set(docId, [...existing, ...aligned])
             }),
-          { concurrency: "unbounded" }
+          { concurrency: options.providerConcurrency }
         )
       }),
-      { concurrency: 1 } // batches processed sequentially, but LLM calls within batch are parallel
+      { concurrency: options.batchConcurrency } // pipeline-level parallelism; provider layer applies prompt-level limits
     )
 
     // 4. Emit annotated documents in order
@@ -1196,6 +1644,16 @@ const annotateDocumentsMultiPass = (
   Effect.gen(function* () {
     const passResults = new Map<string, Array<Array<Extraction>>>()
     const documentTexts = new Map<string, string>()
+    const tokenizer = yield* Tokenizer
+    const promptBuilder = yield* PromptBuilder
+
+    // Build chunk/batch plan once; reuse it for each pass.
+    const chunks = yield* chunkDocuments(documents, options.maxCharBuffer, tokenizer)
+    const batchPlan = makeBatches(chunks, {
+      targetBatchLength: options.batchLength,
+      maxBatchInputTokens: options.maxBatchInputTokens,
+      estimateTokens: (chunk) => estimatePromptTokens(promptBuilder, chunk)
+    })
 
     for (const doc of documents) {
       const docId = doc.documentId ?? ""
@@ -1205,7 +1663,15 @@ const annotateDocumentsMultiPass = (
 
     // Run each pass sequentially
     for (let pass = 0; pass < options.extractionPasses; pass++) {
-      const passAnnotations = yield* annotateDocumentsSinglePass(documents, options)
+      const passAnnotations = yield* annotateDocumentsSinglePassFromPlan(batchPlan, {
+        ...options,
+        passNumber: pass + 1,
+        cachePolicy: options.cachePolicy && new PrimedCachePolicy({
+          ...options.cachePolicy,
+          // Keep cache keys pass-aware to avoid context collisions.
+          namespace: `${options.cachePolicy.namespace}:pass-${pass + 1}`
+        })
+      })
 
       for (const annotatedDoc of passAnnotations) {
         const docId = annotatedDoc.documentId ?? ""
@@ -1229,14 +1695,22 @@ const annotateDocumentsMultiPass = (
   })
 ```
 
+Efficiency rule for feature parity:
+
+- Multi-pass runs must reuse chunk and batch plans derived from identical input text.
+- Only inference and resolver/alignment steps re-run per pass.
+- This preserves Python behavior while removing redundant tokenization/chunking overhead.
+
 ### 8.4 Layer Composition Example
 
 ```typescript
 // Composing the full application layer for Gemini extraction
-const AppLayer = Annotator.Live.pipe(
+const AppLayer = AnnotatorLive.pipe(
   Layer.provide(ResolverLive),
   Layer.provide(PromptBuilderLive),
   Layer.provide(FormatHandlerLive),
+  Layer.provide(ProviderRateLimiterLive),
+  Layer.provide(PrimedCacheLive),
   Layer.provide(GeminiLanguageModelLive),
   Layer.provide(GeminiConfigLive),
   Layer.provide(RegexTokenizerLive)
@@ -1249,6 +1723,11 @@ const program = extract({
   examples: [myExample],
   maxCharBuffer: 1000,
   batchLength: 10,
+  batchConcurrency: 1,
+  providerConcurrency: 8,
+  primedCacheEnabled: true,
+  primedCacheTtlSeconds: 86400,
+  primedCacheDeterministicOnly: true,
   extractionPasses: 1
 })
 
@@ -1256,6 +1735,15 @@ const result = Effect.runPromise(
   program.pipe(Effect.provide(AppLayer))
 )
 ```
+
+### 8.5 Efficiency Checklist (Parity-Safe)
+
+- Build chunk/token plans once per extraction run and reuse them across passes.
+- Use token-aware batching (`maxBatchInputTokens`) instead of fixed-size-only batching.
+- Keep pipeline and provider concurrency separate to prevent multiplicative request spikes.
+- Memoize alignment for identical `(chunkText, modelOutput)` pairs within a run.
+- Use `RequestResolver`/queue-based coalescing for identical in-flight prompts.
+- Keep cache keys context-aware (`passNumber`, `contextWindowChars`, additional context hash).
 
 ---
 
@@ -1344,26 +1832,30 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 - TextChunk schema
 - SentenceIterator -- iterate through sentences using Tokenizer
 - ChunkIterator -- break documents into chunks respecting maxCharBuffer
-- `makeBatches()` -- batch chunks for processing
+- `makeBatches()` -- token-aware batching with prompt-overhead estimation
 - Character interval computation from token intervals
+- Reusable chunk/batch plans for multi-pass extraction (build once, consume across passes)
 
 **Dependencies**: Phase 1, Phase 2 (Tokenizer)
-**Tests**: Port chunking_test.py
+**Tests**: Port chunking_test.py + token-budget batching tests
 
 ### Phase 7: Provider System
 
-**Files**: `src/LanguageModel.ts`, `src/ProviderSchema.ts`, `src/providers/Gemini.ts`, `src/providers/OpenAI.ts`, `src/providers/Ollama.ts`, `src/providers/GeminiSchema.ts`
+**Files**: `src/LanguageModel.ts`, `src/PrimedCache.ts`, `src/RuntimeControl.ts`, `src/ProviderSchema.ts`, `src/providers/AiAdapters.ts`, `src/providers/Gemini.ts`, `src/providers/OpenAI.ts`, `src/providers/Ollama.ts`, `src/providers/GeminiSchema.ts`
 
 - LanguageModel service interface
+- PrimedCache service interface + key derivation utilities
 - ProviderSchema base (BaseSchema, FormatModeSchema)
 - GeminiSchema -- generate JSON schema from examples
-- Gemini provider Layer (using `@google/generative-ai` or `google-genai` npm package)
-- OpenAI provider Layer (using `openai` npm package)
-- Ollama provider Layer (using HTTP fetch to Ollama REST API)
-- Each provider implements the `infer()` method with proper error handling
+- Gemini/OpenAI provider layers via `@effect/ai-google` and `@effect/ai-openai`
+- Ollama provider layer via `HttpClient` adapter implementing the same service contract
+- Optional Anthropic provider integration via `@effect/ai-anthropic`
+- Runtime control layers (`RateLimiter`, optional `RequestResolver.dataLoader`)
+- Each provider implements `infer()/generateText()/generateObject()/streamText()` with primed-cache read/write behavior
+- Provider-level concurrency is explicitly separate from pipeline concurrency
 
 **Dependencies**: Phase 1 (errors, ScoredOutput), Phase 6 (Config)
-**Tests**: Mock-based provider tests, integration tests with real APIs
+**Tests**: `@effect/vitest` layer-driven provider tests + mock/integration API tests
 
 ### Phase 8: Prompt Validation
 
@@ -1384,12 +1876,12 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 
 - Annotator service interface + Layer
 - Single-pass annotation pipeline
-- Multi-pass annotation with non-overlapping merge
+- Multi-pass annotation with non-overlapping merge and chunk-plan reuse
 - Document chunk iteration
-- Batch processing with Effect concurrency
+- Batch processing with Effect concurrency and bounded fan-out (`batchConcurrency × providerConcurrency`)
 
 **Dependencies**: Phase 1-8 (all previous phases)
-**Tests**: Port annotation_test.py
+**Tests**: Port annotation_test.py + multi-pass plan-reuse parity tests
 
 ### Phase 10: Top-Level API + I/O
 
@@ -1429,6 +1921,22 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 
 **Dependencies**: All previous phases
 **Tests**: CLI integration tests
+
+### Phase 13: Effect Service Tests (Vitest + Test Layers)
+
+**Files**: `test/**/*.test.ts`, `test/layers/*.ts`, `vitest.config.ts`
+
+- Use `@effect/vitest` as the default test API (`describe`, `it`, `expect`) for all Effect programs.
+- Service-level tests MUST use `Context.Tag` interfaces with explicit test layers (`Layer.succeed` / `Layer.effect`).
+- Each service exports `<Service>Live` and `<Service>Test` so tests can swap dependencies without changing call sites.
+- Prefer `it.effect` for deterministic tests (built-in `TestContext`, `TestClock`, `TestRandom`).
+- Use `it.live` only when testing real time/network semantics.
+- Use `layer(...)` and `it.layer(...)` to share test services per suite while preserving layer composition semantics.
+- Provider and cache tests MUST run with in-memory `PrimedCache` test layers and deterministic model stubs.
+- Integration tests can swap to filesystem-backed cache layers to verify persistence/invalidation behavior.
+
+**Dependencies**: Phase 1-12
+**Tests**: Contract tests for each `Context.Tag` service + end-to-end extraction tests with layered fixtures
 
 ---
 
@@ -1577,6 +2085,58 @@ for (const { segment } of segmenter.segment(text)) { ... }
 
 **Effect**: Uses `@effect/platform`'s `HttpClient` service for all HTTP, providing proper error handling, timeouts, and resource management through the Effect ecosystem.
 
+### 10.13 Effect AI Provider Abstraction
+
+**Python**: Provider clients are mostly direct SDK calls with provider-specific response handling.
+
+**Effect**: Provider clients use `@effect/ai` abstractions (`generateText`, `generateObject`, `streamText`) with provider adapters from `@effect/ai-openai`, `@effect/ai-google`, and optional `@effect/ai-anthropic`. The langextract `LanguageModel` service remains the stable contract, while adapters normalize provider-specific behavior.
+
+### 10.14 Primed Cache as a First-Class Service
+
+**Python**: Cache behavior exists but is not modeled as an explicit typed service boundary.
+
+**Effect**: Primed caching is a required `Context.Tag` service (`PrimedCache`) with typed key/policy models, provider-aware key derivation, and swappable layer implementations (in-memory, persisted, test). This keeps cache semantics explicit in signatures and testable via layer substitution.
+
+### 10.15 Optimization Guardrails for Parity
+
+Performance optimizations are allowed only when the following behaviors remain unchanged:
+
+- Alignment semantics: exact/match_lesser/fuzzy status selection and threshold handling must match Python resolver behavior.
+- Merge semantics: multi-pass merge remains first-pass-wins for overlapping intervals.
+- Error semantics: invalid token intervals, parse failures, and inference failures remain surfaced through typed errors at equivalent decision points.
+- Prompt context semantics: context-window and additional-context changes must invalidate cache hits through key derivation.
+- Concurrency semantics: failures in parallel inference still fail the enclosing effect (no silent drops).
+
+## 11. Platform-Bun Integration
+
+The Bun runtime is our primary deployment target, so SPEC.md should explain which `@effect/platform-bun` layers are required for the CLI runtime, networking, file system, configuration, and worker services.
+
+### 11.1 CLI & Runtime Entry Point
+
+- `@effect/platform-bun/BunRuntime` exposes `runMain: RunMain` (`node_modules/@effect/platform-bun/dist/dts/BunRuntime.d.ts`).  The CLI entrypoint in `src/index.ts` should wrap the `cli` command with `runMain` so Bun initializes Effect’s runtime, handles shutdown hooks, and keeps the process alive.
+- The contextual services that `runMain` expects are grouped in `@effect/platform-bun/BunContext` (`dist/dts/BunContext.d.ts`).  SPEC.md should state that `src/Cli.ts` layers `BunContext.layer`, `BunCommandExecutor.layer`, and `BunTerminal.layer` so the CLI’s progress reporting, shell helpers, and worker supervision resolve through Bun-specific implementations.
+
+### 11.2 HttpClient & Fetch Surface
+
+- Provider clients (Gemini, OpenAI, Ollama) and helpers such as `downloadText()` must rely on the `HttpClient` service from `@effect/platform`. Document that `@effect/platform-bun/BunHttpPlatform` (`dist/dts/BunHttpPlatform.d.ts`) wires Bun’s `fetch`/`Request`/`Blob` into the HTTP platform. Filesystem and cache-backed etag services are provided separately by `BunFileSystem` and key-value/etag layers.
+- When a local HTTP server is required (visualization preview, test doubles) `@effect/platform-bun/BunHttpServer` hosts Bun’s `Bun.serve()` and exposes layers (`layer`, `layerContext`, `layerTest`, `layerConfig`) that supply `HttpServer`, `HttpPlatform`, `Etag`, and `BunContext`.  The spec should call out `BunHttpServerRequest.toRequest` (`dist/dts/BunHttpServerRequest.d.ts`) as the bridge from Bun requests to `@effect/platform/HttpServerRequest`.
+
+### 11.3 File System & Cache Persistence
+
+- `@effect/platform-bun/BunFileSystem.layer` provides the `FileSystem` service that download helpers, example loaders, JSONL writers, and cache cleanup rely on.  Combine it with `BunPath.layer`, `layerPosix`, or `layerWin32` (`dist/dts/BunPath.d.ts`) so all path calculations respect the Bun `fs` semantics used throughout `src/IO.ts` and CLI option parsing.
+- Persistence layers such as `KeyValueStore` should use `@effect/platform-bun/BunKeyValueStore.layerFileSystem` (`dist/dts/BunKeyValueStore.d.ts`) so cached prompts/examples/embedding indexes are written to Bun’s filesystem with the same directory convention as the CLI.
+
+### 11.4 Environment & Configuration Support
+
+- Document that all configuration (API keys, timeouts, provider endpoints, `ServeOptions`) is resolved through `effect/Config`, and that `BunHttpServer.layerConfig` (`dist/dts/BunHttpServer.d.ts`) is the prescribed way to read server options from the environment and start Bun servers automatically.
+- Since `BunContext.layer` exposes `Terminal`, `CommandExecutor`, `Path`, `FileSystem`, and `WorkerManager`, note that CLI features (progress logging, shell helpers, worker supervision) should consume those services through the Bun context layer instead of re-implementing platform checks.
+
+### 11.5 Worker & Background Runtime Setup
+
+- `@effect/platform-bun/BunWorker` exports the Bun-native worker manager (`layerManager`), platform worker (`layerWorker`), and platform-specific layer constructor (`layerPlatform`) from `dist/dts/BunWorker.d.ts`. The spec should state that chunk processing leverages these layers along with `WorkerRunner` abstractions so pipeline concurrency maps to managed Bun workers instead of raw `new Worker()`.
+- `@effect/platform-bun/BunWorkerRunner.layer` (`dist/dts/BunWorkerRunner.d.ts`) fulfills the `WorkerRunner.PlatformRunner` requirement and re-exports `launch` from `@effect/platform/WorkerRunner`.  Mention in SPEC.md that worker cache layers (for tokenizer caches, alignment indexes, etc.) share the same `BunKeyValueStore` file-system backing so caches stay consistent across workers.
+- Reinforce that `BunRuntime.runMain` remains the deterministic entry point even when spawning background workers or servers, ensuring there is only one `main()` orchestrating the Bun program.
+
 ---
 
 ## Appendix A: Constants
@@ -1620,6 +2180,8 @@ src/
   FormatHandler.ts      -- FormatHandler service, parsing, formatting
   ProviderSchema.ts     -- BaseSchema, FormatModeSchema
   LanguageModel.ts      -- LanguageModel service interface, ModelConfig
+  PrimedCache.ts        -- PrimedCache service, key derivation, persistence wiring
+  RuntimeControl.ts     -- Rate limiter and request coalescing layers
   Prompting.ts          -- PromptTemplate, QAPromptGenerator, ContextAwarePromptBuilder
   Chunking.ts           -- TextChunk, ChunkIterator, SentenceIterator, batching
   Resolver.ts           -- Resolver service, WordAligner, SequenceMatcher
@@ -1630,10 +2192,14 @@ src/
   Visualization.ts      -- HTML visualization generation
   Cli.ts                -- @effect/cli command definitions
   providers/
+    AiAdapters.ts       -- @effect/ai adapters that implement LanguageModel service
     Patterns.ts         -- Provider regex patterns (for CLI model-to-provider mapping)
     Gemini.ts           -- Gemini provider Layer + Config
     GeminiBatch.ts      -- Gemini batch API support
     GeminiSchema.ts     -- Gemini JSON schema generation from examples
     OpenAI.ts           -- OpenAI provider Layer + Config
     Ollama.ts           -- Ollama provider Layer + Config
+  test/
+    layers/             -- TestLayer implementations for Context.Tag services
+    providers/          -- Provider + cache contract tests with @effect/vitest
 ```
