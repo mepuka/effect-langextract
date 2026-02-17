@@ -1,55 +1,32 @@
-import { createHash } from "node:crypto"
+import * as NativeLanguageModel from "@effect/ai/LanguageModel"
+import { Effect, Schema, Stream } from "effect"
 
-import { Effect, Stream } from "effect"
-
-import { makeStaticLanguageModel } from "../LanguageModel.js"
-import type {
-  InferOptions,
-  LanguageModelService
-} from "../LanguageModel.js"
+import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { InferenceRuntimeError } from "../Errors.js"
 import { ScoredOutput } from "../FormatType.js"
 import { PrimedCache, PrimedCacheKey } from "../PrimedCache.js"
 
-const inferProviderOutput = (
-  provider: string,
-  prompt: string
-): string => {
-  const marker = "Text:\n"
-  const textIndex = prompt.lastIndexOf(marker)
-  const sourceText =
-    textIndex >= 0
-      ? prompt.slice(textIndex + marker.length).trim()
-      : prompt.trim()
+const JsonString = Schema.parseJson()
+const JsonRecord = Schema.Record({
+  key: Schema.String,
+  value: Schema.Unknown
+})
 
-  const firstLine = sourceText.split("\n")[0] ?? sourceText
-  const words = firstLine
-    .split(/\s+/)
-    .map((word) => word.replace(/[^\p{L}\p{N}_-]/gu, ""))
-    .filter((word) => word.length > 0)
-
-  const extractionText =
-    words.length >= 2
-      ? `${words[0]} ${words[1]}`
-      : (words[0] ?? sourceText.slice(0, 24)).trim()
-
-  const extraction = {
-    extractionClass: "snippet",
-    extractionText: extractionText.length > 0 ? extractionText : sourceText
+const hashString = (value: string): string => {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
   }
-
-  return JSON.stringify([extraction])
+  return (hash >>> 0).toString(16).padStart(8, "0")
 }
 
-const makeCacheFingerprint = (prompt: string): string =>
-  createHash("sha256").update(prompt).digest("hex")
+const makeCacheFingerprint = (prompt: string): string => hashString(prompt)
 
 const normalizeNamespace = (options?: InferOptions): string =>
   options?.cachePolicy?.namespace ?? "langextract"
 
-const isDeterministicRequest = (
-  options?: InferOptions
-): boolean => {
+const isDeterministicRequest = (options?: InferOptions): boolean => {
   const temperature = options?.providerOptions?.temperature
   if (typeof temperature === "number") {
     return temperature <= 0
@@ -87,7 +64,37 @@ const withCacheMetadata = (
       })
   )
 
+const toInferenceRuntimeError = (
+  provider: string,
+  message: string,
+  error?: unknown
+): InferenceRuntimeError =>
+  new InferenceRuntimeError({
+    provider,
+    message:
+      error === undefined
+        ? message
+        : `${message}: ${
+            typeof error === "object" && error !== null && "message" in error
+              ? String((error as { readonly message: unknown }).message)
+              : String(error)
+          }`
+  })
+
+const invokeNativeText = (
+  nativeModel: NativeLanguageModel.Service,
+  provider: string,
+  prompt: string
+): Effect.Effect<string, InferenceRuntimeError> =>
+  nativeModel.generateText({ prompt }).pipe(
+    Effect.map((response) => response.text),
+    Effect.mapError((error) =>
+      toInferenceRuntimeError(provider, "Provider text generation failed", error)
+    )
+  )
+
 const runPromptInference = (
+  nativeModel: NativeLanguageModel.Service,
   provider: string,
   modelId: string,
   cache: PrimedCache,
@@ -104,12 +111,8 @@ const runPromptInference = (
     } as const
 
     const cached = yield* cache.get(key, cacheOptions).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceRuntimeError({
-            provider,
-            message: `Failed to read primed cache: ${error.message}`
-          })
+      Effect.mapError((error) =>
+        toInferenceRuntimeError(provider, "Failed to read primed cache", error)
       )
     )
 
@@ -117,7 +120,7 @@ const runPromptInference = (
       return withCacheMetadata(cached, keyString, "hit")
     }
 
-    const output = inferProviderOutput(provider, prompt)
+    const output = yield* invokeNativeText(nativeModel, provider, prompt)
     const scored = [
       new ScoredOutput({
         provider,
@@ -127,12 +130,8 @@ const runPromptInference = (
     ] as const
 
     yield* cache.put(key, scored, cacheOptions).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceRuntimeError({
-            provider,
-            message: `Failed to write primed cache: ${error.message}`
-          })
+      Effect.mapError((error) =>
+        toInferenceRuntimeError(provider, "Failed to write primed cache", error)
       )
     )
 
@@ -144,92 +143,84 @@ export const makeProviderLanguageModelService = (options: {
   readonly modelId: string
   readonly requiresFenceOutput?: boolean
   readonly cache: PrimedCache
-}): LanguageModelService => {
-  const staticModel = makeStaticLanguageModel({
-    provider: options.provider,
-    modelId: options.modelId,
-    ...(options.requiresFenceOutput !== undefined
-      ? { requiresFenceOutput: options.requiresFenceOutput }
-      : {})
-  })
-
-  return {
-    ...staticModel,
-    infer: (batchPrompts, inferOptions) =>
-      Effect.forEach(
-        batchPrompts,
-        (prompt) =>
-          runPromptInference(
-            options.provider,
-            options.modelId,
-            options.cache,
-            prompt,
-            inferOptions
-          ),
-        {
-          concurrency: inferOptions?.providerConcurrency ?? 8
-        }
-      ),
-    generateText: (prompt, inferOptions) =>
-      runPromptInference(
-        options.provider,
-        options.modelId,
-        options.cache,
-        prompt,
-        inferOptions
-      ).pipe(
-        Effect.map((values) => values[0] ?? new ScoredOutput({}))
-      ),
-    generateObject: (prompt, inferOptions) =>
-      runPromptInference(
-        options.provider,
-        options.modelId,
-        options.cache,
-        prompt,
-        inferOptions
-      ).pipe(
-        Effect.map((values) => JSON.parse(values[0]?.output ?? "{}")),
-        Effect.catchAll((error) =>
-          Effect.fail(
-            new InferenceRuntimeError({
-              provider: options.provider,
-              message: `Failed to parse provider JSON output: ${error.message}`
-            })
-          )
-        )
-      ),
-    streamText: (prompt, inferOptions) =>
-      Stream.fromEffect(
+  readonly nativeModel: NativeLanguageModel.Service
+  readonly defaultProviderConcurrency?: number | undefined
+}): LanguageModelService => ({
+  modelId: options.modelId,
+  requiresFenceOutput: options.requiresFenceOutput ?? false,
+  schema: undefined,
+  infer: (batchPrompts, inferOptions) =>
+    Effect.forEach(
+      batchPrompts,
+      (prompt) =>
         runPromptInference(
+          options.nativeModel,
+          options.provider,
+          options.modelId,
+          options.cache,
+          prompt,
+          inferOptions
+        ),
+      {
+        concurrency:
+          inferOptions?.providerConcurrency ??
+          options.defaultProviderConcurrency ??
+          8
+      }
+    ),
+  generateText: (prompt, inferOptions) =>
+    runPromptInference(
+      options.nativeModel,
+      options.provider,
+      options.modelId,
+      options.cache,
+      prompt,
+      inferOptions
+    ).pipe(Effect.map((values) => values[0] ?? new ScoredOutput({}))),
+  generateObject: (prompt, inferOptions) =>
+    options.nativeModel.generateObject({
+      prompt,
+      schema: JsonRecord
+    }).pipe(
+      Effect.map((response) => response.value),
+      Effect.catchAll(() =>
+        runPromptInference(
+          options.nativeModel,
           options.provider,
           options.modelId,
           options.cache,
           prompt,
           inferOptions
         ).pipe(
-          Effect.map((values) => values[0]?.output ?? "")
+          Effect.flatMap((values) =>
+            Schema.decodeUnknown(JsonString)(values[0]?.output ?? "{}").pipe(
+              Effect.flatMap((decoded) =>
+                Schema.decodeUnknown(JsonRecord)(decoded)
+              ),
+              Effect.mapError((error) =>
+                toInferenceRuntimeError(
+                  options.provider,
+                  "Failed to parse provider JSON output",
+                  error
+                )
+              )
+            )
+          )
         )
+      ),
+      Effect.mapError((error) =>
+        toInferenceRuntimeError(options.provider, "Provider object generation failed", error)
       )
-  }
-}
-
-export const inferWithProviderPrefix = (
-  provider: string,
-  prompts: ReadonlyArray<string>,
-  _options?: InferOptions
-): Effect.Effect<ReadonlyArray<ReadonlyArray<ScoredOutput>>> =>
-  Effect.succeed(
-    prompts.map((prompt) => [
-      new ScoredOutput({
-        provider,
-        output: prompt,
-        score: 1
-      })
-    ])
-  )
-
-export const streamProviderText = (
-  provider: string,
-  prompt: string
-): Stream.Stream<string> =>
-  Stream.fromIterable([`[${provider}]`, prompt])
+    ),
+  streamText: (prompt, inferOptions) =>
+    Stream.fromEffect(
+      runPromptInference(
+        options.nativeModel,
+        options.provider,
+        options.modelId,
+        options.cache,
+        prompt,
+        inferOptions
+      ).pipe(Effect.map((values) => values[0]?.output ?? ""))
+    )
+})

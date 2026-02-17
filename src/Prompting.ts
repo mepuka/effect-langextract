@@ -20,6 +20,16 @@ export interface PromptBuilderService {
   readonly template: PromptTemplateStructured
 }
 
+const JsonString = Schema.parseJson()
+
+const encodeExampleExtractions = (example: ExampleData): string => {
+  try {
+    return Schema.encodeSync(JsonString)(example.extractions)
+  } catch {
+    return "[]"
+  }
+}
+
 const buildPromptText = (
   template: PromptTemplateStructured,
   chunkText: string,
@@ -28,12 +38,8 @@ const buildPromptText = (
 ): string => {
   const examplesBlock = template.examples
     .map((example: ExampleData, index: number) => {
-      const extractionJson = JSON.stringify(example.extractions)
-      return [
-        `Example ${index + 1}:`,
-        example.text,
-        extractionJson
-      ].join("\n")
+      const extractionJson = encodeExampleExtractions(example)
+      return [`Example ${index + 1}:`, example.text, extractionJson].join("\n")
     })
     .join("\n\n")
 
@@ -69,7 +75,9 @@ export class PromptBuilder extends Effect.Service<PromptBuilder>()(
         })
       )
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<PromptBuilder> = PromptBuilder.Default
+}
 
 export const makePromptBuilderLayer = (
   template: PromptTemplateStructured
@@ -78,7 +86,7 @@ export const makePromptBuilderLayer = (
 
 export const PromptBuilderLive: Layer.Layer<PromptBuilder> = PromptBuilder.Default
 
-export const PromptBuilderTest: Layer.Layer<PromptBuilder> = PromptBuilder.Default
+export const PromptBuilderTest: Layer.Layer<PromptBuilder> = PromptBuilder.Test
 
 export const buildPrompt = (
   chunkText: string,

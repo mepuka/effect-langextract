@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 
 import { AnnotatedDocument } from "./Data.js"
 
@@ -12,6 +12,11 @@ export interface VisualizerService {
   ) => Effect.Effect<string>
 }
 
+const JsonString = Schema.parseJson()
+
+const encodeVisualizationPayload = (payload: unknown): Effect.Effect<string> =>
+  Schema.encode(JsonString)(payload).pipe(Effect.orElseSucceed(() => "{}"))
+
 const visualizeImpl = (
   doc: AnnotatedDocument,
   options?: {
@@ -19,16 +24,20 @@ const visualizeImpl = (
     showLegend?: boolean
   }
 ): Effect.Effect<string> =>
-  Effect.succeed(`<!doctype html>
+  encodeVisualizationPayload({ doc, options }).pipe(
+    Effect.map(
+      (payload) => `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <title>effect-langextract visualization</title>
   </head>
   <body>
-    <pre>${JSON.stringify({ doc, options }, null, 2)}</pre>
+    <pre>${payload}</pre>
   </body>
-</html>`)
+</html>`
+    )
+  )
 
 export class Visualizer extends Effect.Service<Visualizer>()(
   "@effect-langextract/Visualizer",
@@ -37,8 +46,10 @@ export class Visualizer extends Effect.Service<Visualizer>()(
       visualize: visualizeImpl
     } satisfies VisualizerService)
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<Visualizer> = Visualizer.Default
+}
 
 export const VisualizerLive: Layer.Layer<Visualizer> = Visualizer.Default
 
-export const VisualizerTest: Layer.Layer<Visualizer> = Visualizer.Default
+export const VisualizerTest: Layer.Layer<Visualizer> = Visualizer.Test

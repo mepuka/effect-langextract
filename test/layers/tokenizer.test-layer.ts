@@ -5,7 +5,6 @@ import type { TokenizerService } from "../../src/Tokenizer.js"
 
 export const makeTokenizerTestLayer = (
   service: TokenizerService
-): Layer.Layer<Tokenizer> =>
-  Layer.succeed(Tokenizer, Tokenizer.make(service))
+): Layer.Layer<Tokenizer> => Tokenizer.testLayer(service)
 
-export const TokenizerContractTestLayer: Layer.Layer<Tokenizer> = Tokenizer.Default
+export const TokenizerContractTestLayer: Layer.Layer<Tokenizer> = Tokenizer.Test

@@ -2,12 +2,21 @@ import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
+  AnthropicConfig,
+  GeminiConfig,
+  LanguageModel,
+  OllamaConfig,
   PrimedCache,
   PrimedCacheTest,
   PrimedCacheKey,
+  PromptBuilder,
+  PromptValidator,
+  Resolver,
   ScoredOutput,
   TokenInterval,
-  Tokenizer
+  Tokenizer,
+  Visualizer,
+  OpenAIConfig
 } from "../../src/index.js"
 
 describe("Service contracts", () => {
@@ -54,4 +63,24 @@ describe("Service contracts", () => {
       expect(afterDelete).toBeUndefined()
     }).pipe(Effect.provide(PrimedCacheTest))
   )
+
+  it("services expose canonical Test/testLayer APIs", () => {
+    expect(typeof Tokenizer.Test).toBe("object")
+    expect(typeof Tokenizer.testLayer).toBe("function")
+    expect(typeof LanguageModel.Test).toBe("object")
+    expect(typeof LanguageModel.testLayer).toBe("function")
+    expect(typeof PrimedCache.testLayer).toBe("function")
+    expect(typeof PromptBuilder.Test).toBe("object")
+    expect(typeof PromptValidator.Test).toBe("object")
+    expect(typeof Resolver.Test).toBe("object")
+    expect(typeof Visualizer.Test).toBe("object")
+    expect(typeof OpenAIConfig.Test).toBe("object")
+    expect(typeof OpenAIConfig.testLayer).toBe("function")
+    expect(typeof GeminiConfig.Test).toBe("object")
+    expect(typeof GeminiConfig.testLayer).toBe("function")
+    expect(typeof AnthropicConfig.Test).toBe("object")
+    expect(typeof AnthropicConfig.testLayer).toBe("function")
+    expect(typeof OllamaConfig.Test).toBe("object")
+    expect(typeof OllamaConfig.testLayer).toBe("function")
+  })
 })

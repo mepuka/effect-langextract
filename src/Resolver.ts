@@ -310,8 +310,10 @@ export class Resolver extends Effect.Service<Resolver>()(
       } satisfies ResolverService
     })
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<Resolver> = Resolver.Default
+}
 
 export const ResolverLive: Layer.Layer<Resolver> = Resolver.Default
 
-export const ResolverTest: Layer.Layer<Resolver> = Resolver.Default
+export const ResolverTest: Layer.Layer<Resolver> = Resolver.Test

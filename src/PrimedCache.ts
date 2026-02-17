@@ -1,8 +1,5 @@
-import { createHash } from "node:crypto"
-import * as Fs from "node:fs/promises"
-import * as Path from "node:path"
-
-import { Effect, Layer, Schema } from "effect"
+import * as KeyValueStore from "@effect/platform/KeyValueStore"
+import { Clock, Effect, Layer, Option, Ref, Schema } from "effect"
 
 import { PrimedCacheError } from "./Errors.js"
 import { FormatType, ScoredOutput } from "./FormatType.js"
@@ -39,6 +36,17 @@ export class PrimedCachePolicy extends Schema.Class<PrimedCachePolicy>("PrimedCa
   })
 }) {}
 
+export interface CacheAccessOptions {
+  readonly policy?: PrimedCachePolicy | undefined
+  readonly isDeterministic?: boolean | undefined
+}
+
+export interface PrimedCacheLayerOptions {
+  readonly enableSessionStore?: boolean | undefined
+  readonly enableRequestStore?: boolean | undefined
+  readonly keyValueStoreLayer?: Layer.Layer<KeyValueStore.KeyValueStore> | undefined
+}
+
 export interface PrimedCacheService {
   readonly get: (
     key: PrimedCacheKey,
@@ -61,66 +69,76 @@ export interface PrimedCacheService {
   ) => Effect.Effect<void, PrimedCacheError>
 }
 
-export interface CacheAccessOptions {
-  readonly policy?: PrimedCachePolicy | undefined
-  readonly isDeterministic?: boolean | undefined
-}
+const NamespaceIndexEntry = Schema.Struct({
+  storageKey: Schema.String,
+  createdAtMs: Schema.Number,
+  expiresAtMs: Schema.Number
+})
 
-export interface PrimedCacheLayerOptions {
-  readonly sessionRootDir?: string | undefined
-  readonly enableSessionStore?: boolean | undefined
-  readonly enableRequestStore?: boolean | undefined
-}
+type NamespaceIndexEntry = typeof NamespaceIndexEntry.Type
 
-type CacheRecord = {
-  readonly key: PrimedCacheKey
-  readonly keyString: string
-  readonly createdAtMs: number
-  readonly expiresAtMs: number
-  readonly value: ReadonlyArray<ScoredOutput>
-}
+const NamespaceIndexJson = Schema.parseJson(Schema.Array(NamespaceIndexEntry))
 
-const DEFAULT_SESSION_ROOT = ".cache/langextract/primed"
-
-const sanitizeSegment = (value: string): string =>
-  value.replace(/[^a-zA-Z0-9._-]/g, "_")
-
-const stableStringify = (value: unknown): string => {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value)
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
-
-  return `{${entries.join(",")}}`
-}
-
-const toKeyString = (key: PrimedCacheKey): string => stableStringify(key)
-
-const hashKey = (value: string): string =>
-  createHash("sha256").update(value).digest("hex")
-
-const toStoragePath = (
-  rootDir: string,
+const CacheRecord = Schema.Struct({
   key: PrimedCacheKey,
-  keyString: string
-): string =>
-  Path.join(
-    rootDir,
+  keyString: Schema.String,
+  createdAtMs: Schema.Number,
+  expiresAtMs: Schema.Number,
+  value: Schema.Array(ScoredOutput)
+})
+
+type CacheRecord = typeof CacheRecord.Type
+
+const CacheRecordJson = Schema.parseJson(CacheRecord)
+
+type RequestStoreRecord = {
+  readonly value: ReadonlyArray<ScoredOutput>
+  readonly expiresAtMs: number
+  readonly createdAtMs: number
+  readonly namespace: string
+}
+
+const sanitizeSegment = (value: string): string => encodeURIComponent(value)
+
+const hashString = (value: string): string => {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0")
+}
+
+const toKeyString = (key: PrimedCacheKey): string =>
+  [
+    key.namespace,
+    key.provider,
+    key.modelId,
+    key.promptFingerprint,
+    key.promptVersion,
+    key.schemaFingerprint ?? "",
+    key.temperature !== undefined ? `${key.temperature}` : "",
+    key.formatType ?? ""
+  ]
+    .map(sanitizeSegment)
+    .join("|")
+
+const toStorageKey = (key: PrimedCacheKey, keyString: string): string =>
+  [
+    "entry",
     sanitizeSegment(key.namespace),
     sanitizeSegment(key.provider),
     sanitizeSegment(key.modelId),
-    `${hashKey(keyString)}.json`
-  )
+    hashString(keyString)
+  ].join(":")
 
-const toNamespacePath = (rootDir: string, namespace: string): string =>
-  Path.join(rootDir, sanitizeSegment(namespace))
+const toNamespaceIndexKey = (namespace: string): string =>
+  `index:${sanitizeSegment(namespace)}`
+
+const errorMessage = (error: unknown): string =>
+  typeof error === "object" && error !== null && "message" in error
+    ? String((error as { readonly message: unknown }).message)
+    : String(error)
 
 const toPrimedCacheError = (
   message: string,
@@ -132,17 +150,24 @@ const toPrimedCacheError = (
   })
 
 const resolvePolicy = (
-  accessOptions?: CacheAccessOptions
-): PrimedCachePolicy => accessOptions?.policy ?? new PrimedCachePolicy({})
+  options?: CacheAccessOptions
+): PrimedCachePolicy =>
+  options?.policy ?? new PrimedCachePolicy({})
+
+const resolveNamespace = (
+  key: PrimedCacheKey,
+  options?: CacheAccessOptions
+): string =>
+  options?.policy?.namespace ?? key.namespace
 
 const canUseCache = (
   policy: PrimedCachePolicy,
-  accessOptions?: CacheAccessOptions
+  options?: CacheAccessOptions
 ): boolean => {
   if (!policy.enabled) {
     return false
   }
-  if (policy.deterministicOnly && accessOptions?.isDeterministic === false) {
+  if (policy.deterministicOnly && options?.isDeterministic === false) {
     return false
   }
   return true
@@ -157,7 +182,7 @@ const copyKey = (
     modelId: key.modelId,
     promptFingerprint: key.promptFingerprint,
     promptVersion: key.promptVersion,
-    namespace: key.namespace ?? namespace,
+    namespace,
     ...(key.schemaFingerprint !== undefined
       ? { schemaFingerprint: key.schemaFingerprint }
       : {}),
@@ -169,374 +194,479 @@ const copyKey = (
       : {})
   })
 
-const isFromNamespace = (keyString: string, namespace: string): boolean => {
-  try {
-    const parsed = JSON.parse(keyString) as { namespace?: string }
-    return (parsed.namespace ?? "langextract") === namespace
-  } catch {
-    return false
-  }
-}
+const encodeNamespaceIndex = (
+  entries: ReadonlyArray<NamespaceIndexEntry>,
+  namespace: string
+): Effect.Effect<string, PrimedCacheError> =>
+  Schema.encode(NamespaceIndexJson)(entries).pipe(
+    Effect.mapError((error) =>
+      toPrimedCacheError(
+        `Failed to encode cache namespace index: ${String(error)}`,
+        toNamespaceIndexKey(namespace)
+      )
+    )
+  )
 
-const toScoredOutputs = (value: unknown): ReadonlyArray<ScoredOutput> => {
-  if (!Array.isArray(value)) {
-    return []
-  }
+const decodeNamespaceIndex = (
+  value: string,
+  namespace: string
+): Effect.Effect<ReadonlyArray<NamespaceIndexEntry>, PrimedCacheError> =>
+  Schema.decode(NamespaceIndexJson)(value).pipe(
+    Effect.mapError((error) =>
+      toPrimedCacheError(
+        `Failed to decode cache namespace index: ${String(error)}`,
+        toNamespaceIndexKey(namespace)
+      )
+    )
+  )
 
-  return value.map((candidate) => {
-    const record =
-      typeof candidate === "object" && candidate !== null
-        ? candidate as Record<string, unknown>
-        : {}
+const encodeCacheRecord = (
+  record: CacheRecord,
+  storageKey: string
+): Effect.Effect<string, PrimedCacheError> =>
+  Schema.encode(CacheRecordJson)(record).pipe(
+    Effect.mapError((error) =>
+      toPrimedCacheError(
+        `Failed to encode cache entry: ${String(error)}`,
+        storageKey
+      )
+    )
+  )
 
-    return new ScoredOutput({
-      ...(typeof record.provider === "string"
-        ? { provider: record.provider }
-        : {}),
-      ...(typeof record.output === "string"
-        ? { output: record.output }
-        : {}),
-      ...(typeof record.score === "number"
-        ? { score: record.score }
-        : {}),
-      ...(record.cacheStatus === "hit" || record.cacheStatus === "miss"
-        ? { cacheStatus: record.cacheStatus }
-        : {}),
-      ...(typeof record.cacheKey === "string"
-        ? { cacheKey: record.cacheKey }
-        : {})
-    })
-  })
-}
-
-const parseRecord = (
-  raw: unknown
-): CacheRecord | undefined => {
-  if (typeof raw !== "object" || raw === null) {
-    return undefined
-  }
-
-  const value = raw as Record<string, unknown>
-  const keyInput = value.key
-  const keyRecord =
-    typeof keyInput === "object" && keyInput !== null
-      ? keyInput as Record<string, unknown>
-      : undefined
-  const key =
-    keyRecord !== undefined &&
-    typeof keyRecord.provider === "string" &&
-    typeof keyRecord.modelId === "string" &&
-    typeof keyRecord.promptFingerprint === "string" &&
-    typeof keyRecord.promptVersion === "string"
-      ? new PrimedCacheKey({
-          provider: keyRecord.provider,
-          modelId: keyRecord.modelId,
-          promptFingerprint: keyRecord.promptFingerprint,
-          promptVersion: keyRecord.promptVersion,
-          ...(typeof keyRecord.namespace === "string"
-            ? { namespace: keyRecord.namespace }
-            : {}),
-          ...(typeof keyRecord.schemaFingerprint === "string"
-            ? { schemaFingerprint: keyRecord.schemaFingerprint }
-            : {}),
-          ...(typeof keyRecord.temperature === "number"
-            ? { temperature: keyRecord.temperature }
-            : {}),
-          ...(keyRecord.formatType === "json" || keyRecord.formatType === "yaml"
-            ? { formatType: keyRecord.formatType }
-            : {})
-        })
-      : undefined
-
-  if (key === undefined) {
-    return undefined
-  }
-
-  const createdAtMs =
-    typeof value.createdAtMs === "number"
-      ? value.createdAtMs
-      : Date.now()
-  const expiresAtMs =
-    typeof value.expiresAtMs === "number"
-      ? value.expiresAtMs
-      : createdAtMs
-  const keyString =
-    typeof value.keyString === "string"
-      ? value.keyString
-      : toKeyString(key)
-
-  return {
-    key,
-    keyString,
-    createdAtMs,
-    expiresAtMs,
-    value: toScoredOutputs(value.value)
-  }
-}
-
-const collectJsonFiles = async (
-  rootDir: string
-): Promise<Array<string>> => {
-  const entries = await Fs.readdir(rootDir, { withFileTypes: true })
-  const files: Array<string> = []
-
-  for (const entry of entries) {
-    const entryPath = Path.join(rootDir, entry.name)
-    if (entry.isDirectory()) {
-      files.push(...(await collectJsonFiles(entryPath)))
-      continue
-    }
-    if (entry.isFile() && entry.name.endsWith(".json")) {
-      files.push(entryPath)
-    }
-  }
-
-  return files
-}
+const decodeCacheRecord = (
+  value: string,
+  storageKey: string
+): Effect.Effect<CacheRecord, PrimedCacheError> =>
+  Schema.decode(CacheRecordJson)(value).pipe(
+    Effect.mapError((error) =>
+      toPrimedCacheError(
+        `Failed to decode cache entry: ${String(error)}`,
+        storageKey
+      )
+    )
+  )
 
 const makeCompositeCache = (
   options?: PrimedCacheLayerOptions
-): PrimedCacheService => {
-  const requestStore = new Map<string, CacheRecord>()
-  const rootDir = options?.sessionRootDir ?? DEFAULT_SESSION_ROOT
-  const requestEnabled = options?.enableRequestStore ?? true
-  const sessionEnabled = options?.enableSessionStore ?? true
+): Effect.Effect<PrimedCacheService, never, KeyValueStore.KeyValueStore> =>
+  Effect.gen(function* () {
+    const store = yield* KeyValueStore.KeyValueStore
+    const requestEnabled = options?.enableRequestStore ?? true
+    const sessionEnabled = options?.enableSessionStore ?? true
+    const requestStoreRef = yield* Ref.make(new Map<string, RequestStoreRecord>())
 
-  return {
-    get: (inputKey, accessOptions) =>
+    const removeStoreKey = (
+      storageKey: string,
+      message: string
+    ): Effect.Effect<void, PrimedCacheError> =>
+      store.remove(storageKey).pipe(
+        Effect.catchTag("SystemError", (error) =>
+          error.reason === "NotFound" ? Effect.void : Effect.fail(error)
+        ),
+        Effect.mapError((error) =>
+          toPrimedCacheError(`${message}: ${errorMessage(error)}`, storageKey)
+        )
+      )
+
+    const readNamespaceIndex = (
+      namespace: string
+    ): Effect.Effect<ReadonlyArray<NamespaceIndexEntry>, PrimedCacheError> =>
+      store.get(toNamespaceIndexKey(namespace)).pipe(
+        Effect.mapError((error) =>
+          toPrimedCacheError(
+            `Failed to read cache namespace index: ${errorMessage(error)}`,
+            toNamespaceIndexKey(namespace)
+          )
+        ),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.succeed([] as const),
+            onSome: (value) =>
+              decodeNamespaceIndex(value, namespace).pipe(
+                Effect.catchAll(() => Effect.succeed([] as const))
+              )
+          })
+        )
+      )
+
+    const writeNamespaceIndex = (
+      namespace: string,
+      entries: ReadonlyArray<NamespaceIndexEntry>
+    ): Effect.Effect<void, PrimedCacheError> =>
+      entries.length === 0
+        ? removeStoreKey(
+            toNamespaceIndexKey(namespace),
+            "Failed to clear empty cache namespace index"
+          )
+        : encodeNamespaceIndex(entries, namespace).pipe(
+            Effect.flatMap((encoded) =>
+              store.set(toNamespaceIndexKey(namespace), encoded)
+            ),
+            Effect.mapError((error) =>
+              toPrimedCacheError(
+                `Failed to write cache namespace index: ${errorMessage(error)}`,
+                toNamespaceIndexKey(namespace)
+              )
+            )
+          )
+
+    const removeEntryFromIndex = (
+      namespace: string,
+      storageKey: string
+    ): Effect.Effect<void, PrimedCacheError> =>
       Effect.gen(function* () {
-        const policy = resolvePolicy(accessOptions)
-        if (!canUseCache(policy, accessOptions)) {
-          return undefined
+        const entries = yield* readNamespaceIndex(namespace)
+        const next = entries.filter((entry) => entry.storageKey !== storageKey)
+        yield* writeNamespaceIndex(namespace, next)
+      })
+
+    const requestGet = (
+      storageKey: string,
+      now: number
+    ): Effect.Effect<RequestStoreRecord | undefined> => {
+      if (!requestEnabled) {
+        return Effect.void.pipe(
+          Effect.as(undefined as RequestStoreRecord | undefined)
+        )
+      }
+
+      return Ref.modify(requestStoreRef, (state) => {
+        const entry = state.get(storageKey)
+        if (entry === undefined) {
+          return [undefined, state] as const
         }
 
-        const key = copyKey(inputKey, policy.namespace)
-        const keyString = toKeyString(key)
-        const now = Date.now()
+        if (entry.expiresAtMs <= now) {
+          const next = new Map(state)
+          next.delete(storageKey)
+          return [undefined, next] as const
+        }
 
-        if (requestEnabled) {
-          const cached = requestStore.get(keyString)
-          if (cached !== undefined) {
-            if (cached.expiresAtMs > now) {
-              return cached.value
-            }
-            requestStore.delete(keyString)
+        return [entry, state] as const
+      })
+    }
+
+    const requestSet = (
+      storageKey: string,
+      value: ReadonlyArray<ScoredOutput>,
+      namespace: string,
+      createdAtMs: number,
+      expiresAtMs: number,
+      maxEntries: number
+    ): Effect.Effect<void> => {
+      if (!requestEnabled) {
+        return Effect.void
+      }
+
+      return Ref.update(requestStoreRef, (state) => {
+        const next = new Map(state)
+        next.set(storageKey, {
+          value,
+          namespace,
+          createdAtMs,
+          expiresAtMs
+        })
+
+        const max = Math.max(0, maxEntries)
+        if (next.size <= max) {
+          return next
+        }
+
+        const overflow = next.size - max
+        const orderedKeys = [...next.entries()]
+          .sort((left, right) => left[1].createdAtMs - right[1].createdAtMs)
+          .map(([key]) => key)
+
+        for (let index = 0; index < overflow; index += 1) {
+          const key = orderedKeys[index]
+          if (key !== undefined) {
+            next.delete(key)
           }
         }
 
+        return next
+      })
+    }
+
+    const requestInvalidate = (storageKey: string): Effect.Effect<void> => {
+      if (!requestEnabled) {
+        return Effect.void
+      }
+
+      return Ref.update(requestStoreRef, (state) => {
+        if (!state.has(storageKey)) {
+          return state
+        }
+        const next = new Map(state)
+        next.delete(storageKey)
+        return next
+      })
+    }
+
+    const clearRequestNamespace = (namespace: string): Effect.Effect<void> => {
+      if (!requestEnabled) {
+        return Effect.void
+      }
+
+      return Ref.update(requestStoreRef, (state) => {
+        const next = new Map(state)
+        for (const [storageKey, entry] of next.entries()) {
+          if (entry.namespace === namespace) {
+            next.delete(storageKey)
+          }
+        }
+        return next
+      })
+    }
+
+    const upsertNamespaceIndex = (
+      namespace: string,
+      entry: NamespaceIndexEntry,
+      maxEntries: number
+    ): Effect.Effect<void, PrimedCacheError> =>
+      Effect.gen(function* () {
+        const existing = yield* readNamespaceIndex(namespace)
+        const merged = [
+          entry,
+          ...existing.filter((item) => item.storageKey !== entry.storageKey)
+        ].sort((left, right) => right.createdAtMs - left.createdAtMs)
+
+        const max = Math.max(0, maxEntries)
+        const retained = merged.slice(0, max)
+        const dropped = merged.slice(max)
+
+        yield* writeNamespaceIndex(namespace, retained)
+
+        yield* Effect.forEach(
+          dropped,
+          (item) =>
+            Effect.gen(function* () {
+              yield* removeStoreKey(item.storageKey, "Failed to prune cache entry")
+              yield* requestInvalidate(item.storageKey)
+            }),
+          { discard: true }
+        )
+      })
+
+    const removeSessionEntry = (
+      namespace: string,
+      storageKey: string
+    ): Effect.Effect<void, PrimedCacheError> =>
+      Effect.gen(function* () {
+        if (!sessionEnabled) {
+          return
+        }
+
+        yield* removeStoreKey(storageKey, "Failed to remove cache entry")
+        yield* removeEntryFromIndex(namespace, storageKey).pipe(
+          Effect.catchAll(() => Effect.void)
+        )
+      })
+
+    const readSessionRecord = (
+      storageKey: string,
+      now: number
+    ): Effect.Effect<CacheRecord | undefined, PrimedCacheError> =>
+      Effect.gen(function* () {
         if (!sessionEnabled) {
           return undefined
         }
 
-        const path = toStoragePath(rootDir, key, keyString)
-        const serialized = yield* Effect.tryPromise({
-          try: () => Fs.readFile(path, "utf8"),
-          catch: (error) =>
+        const maybeRaw = yield* store.get(storageKey).pipe(
+          Effect.mapError((error) =>
             toPrimedCacheError(
-              `Failed to read primed cache entry: ${String(error)}`,
-              keyString
+              `Failed to read cache entry: ${errorMessage(error)}`,
+              storageKey
             )
-        }).pipe(
-          Effect.catchAll((error) =>
-            error.message.includes("ENOENT")
-              ? Effect.succeed(undefined)
-              : Effect.fail(error)
           )
         )
 
-        if (serialized === undefined) {
+        if (Option.isNone(maybeRaw)) {
           return undefined
         }
 
-        const decoded = yield* Effect.try({
-          try: () => parseRecord(JSON.parse(serialized)),
-          catch: (error) =>
-            toPrimedCacheError(
-              `Failed to decode primed cache entry: ${String(error)}`,
-              keyString
-            )
-        }).pipe(
+        const decoded = yield* decodeCacheRecord(maybeRaw.value, storageKey).pipe(
           Effect.catchAll(() =>
-            Effect.tryPromise({
-              try: async () => {
-                await Fs.rm(path, { force: true })
-              },
-              catch: (error) =>
-                toPrimedCacheError(
-                  `Failed to clean invalid primed cache entry: ${String(error)}`,
-                  keyString
-                )
-            }).pipe(Effect.as(undefined))
+            Effect.void.pipe(
+              Effect.as(undefined as CacheRecord | undefined)
+            )
           )
         )
 
         if (decoded === undefined) {
+          yield* removeStoreKey(storageKey, "Failed to remove invalid cache entry").pipe(
+            Effect.catchAll(() => Effect.void)
+          )
           return undefined
         }
 
         if (decoded.expiresAtMs <= now) {
-          yield* Effect.tryPromise({
-            try: async () => {
-              await Fs.rm(path, { force: true })
-            },
-            catch: (error) =>
-              toPrimedCacheError(
-                `Failed to remove expired primed cache entry: ${String(error)}`,
-                keyString
-              )
-          }).pipe(Effect.catchAll(() => Effect.void))
+          yield* removeSessionEntry(decoded.key.namespace, storageKey).pipe(
+            Effect.catchAll(() => Effect.void)
+          )
           return undefined
         }
 
-        if (requestEnabled) {
-          requestStore.set(keyString, decoded)
-        }
-        return decoded.value
-      }),
-    put: (inputKey, value, accessOptions) =>
-      Effect.gen(function* () {
-        const policy = resolvePolicy(accessOptions)
-        if (!canUseCache(policy, accessOptions)) {
-          return
-        }
+        return decoded
+      })
 
-        const key = copyKey(inputKey, policy.namespace)
-        const keyString = toKeyString(key)
-        const now = Date.now()
-        const expiresAtMs = now + policy.ttlSeconds * 1000
-        const record: CacheRecord = {
-          key,
-          keyString,
-          createdAtMs: now,
-          expiresAtMs,
-          value
-        }
+    return {
+      get: (inputKey, accessOptions) =>
+        Effect.gen(function* () {
+          const policy = resolvePolicy(accessOptions)
+          if (!canUseCache(policy, accessOptions)) {
+            return undefined
+          }
 
-        if (requestEnabled) {
-          requestStore.set(keyString, record)
-        }
+          const key = copyKey(inputKey, resolveNamespace(inputKey, accessOptions))
+          const keyString = toKeyString(key)
+          const storageKey = toStorageKey(key, keyString)
+          const now = yield* Clock.currentTimeMillis
 
-        if (!sessionEnabled) {
-          return
-        }
+          const requestEntry = yield* requestGet(storageKey, now)
+          if (requestEntry !== undefined) {
+            return requestEntry.value
+          }
 
-        const path = toStoragePath(rootDir, key, keyString)
-        const directory = Path.dirname(path)
+          const sessionEntry = yield* readSessionRecord(storageKey, now)
+          if (sessionEntry === undefined) {
+            return undefined
+          }
 
-        yield* Effect.tryPromise({
-          try: async () => {
-            await Fs.mkdir(directory, { recursive: true })
-            await Fs.writeFile(path, JSON.stringify(record), "utf8")
-          },
-          catch: (error) =>
-            toPrimedCacheError(
-              `Failed to write primed cache entry: ${String(error)}`,
-              keyString
-            )
-        })
+          yield* requestSet(
+            storageKey,
+            sessionEntry.value,
+            key.namespace,
+            sessionEntry.createdAtMs,
+            sessionEntry.expiresAtMs,
+            policy.maxEntries
+          )
 
-        const namespacePath = toNamespacePath(rootDir, key.namespace)
-        yield* Effect.tryPromise({
-          try: async () => {
-            const files = await collectJsonFiles(namespacePath)
-            if (files.length <= policy.maxEntries) {
-              return
-            }
+          return sessionEntry.value
+        }),
+      put: (inputKey, value, accessOptions) =>
+        Effect.gen(function* () {
+          const policy = resolvePolicy(accessOptions)
+          if (!canUseCache(policy, accessOptions)) {
+            return
+          }
 
-            const entries = await Promise.all(
-              files.map(async (filePath) => {
-                const text = await Fs.readFile(filePath, "utf8")
-                const parsed = parseRecord(JSON.parse(text))
-                return { filePath, createdAtMs: parsed?.createdAtMs ?? 0 }
-              })
-            )
+          const key = copyKey(inputKey, resolveNamespace(inputKey, accessOptions))
+          const keyString = toKeyString(key)
+          const storageKey = toStorageKey(key, keyString)
 
-            entries.sort((left, right) => right.createdAtMs - left.createdAtMs)
-            const toDelete = entries.slice(policy.maxEntries)
-            await Promise.all(
-              toDelete.map(({ filePath }) =>
-                Fs.rm(filePath, { force: true })
+          const now = yield* Clock.currentTimeMillis
+          const ttlMillis = Math.max(0, policy.ttlSeconds) * 1000
+          const expiresAtMs = now + ttlMillis
+
+          yield* requestSet(
+            storageKey,
+            value,
+            key.namespace,
+            now,
+            expiresAtMs,
+            policy.maxEntries
+          )
+
+          if (!sessionEnabled) {
+            return
+          }
+
+          const record: CacheRecord = {
+            key,
+            keyString,
+            createdAtMs: now,
+            expiresAtMs,
+            value
+          }
+
+          const encodedRecord = yield* encodeCacheRecord(record, storageKey)
+
+          yield* store.set(storageKey, encodedRecord).pipe(
+            Effect.mapError((error) =>
+              toPrimedCacheError(
+                `Failed to write cache entry: ${errorMessage(error)}`,
+                storageKey
               )
             )
-          },
-          catch: (error) =>
-            toPrimedCacheError(
-              `Failed to prune primed cache namespace: ${String(error)}`,
-              keyString
-            )
-        }).pipe(Effect.catchAll(() => Effect.void))
-      }),
-    invalidate: (inputKey, accessOptions) =>
-      Effect.gen(function* () {
-        const policy = resolvePolicy(accessOptions)
-        const key = copyKey(inputKey, policy.namespace)
-        const keyString = toKeyString(key)
+          )
 
-        if (requestEnabled) {
-          requestStore.delete(keyString)
-        }
-        if (!sessionEnabled) {
-          return
-        }
+          yield* upsertNamespaceIndex(
+            key.namespace,
+            {
+              storageKey,
+              createdAtMs: now,
+              expiresAtMs
+            },
+            policy.maxEntries
+          )
+        }),
+      invalidate: (inputKey, accessOptions) =>
+        Effect.gen(function* () {
+          const key = copyKey(inputKey, resolveNamespace(inputKey, accessOptions))
+          const keyString = toKeyString(key)
+          const storageKey = toStorageKey(key, keyString)
 
-        const path = toStoragePath(rootDir, key, keyString)
-        yield* Effect.tryPromise({
-          try: async () => {
-            await Fs.rm(path, { force: true })
-          },
-          catch: (error) =>
-            toPrimedCacheError(
-              `Failed to invalidate primed cache entry: ${String(error)}`,
-              keyString
-            )
-        }).pipe(Effect.catchAll(() => Effect.void))
-      }),
-    clearNamespace: (namespace) =>
-      Effect.gen(function* () {
-        for (const keyString of requestStore.keys()) {
-          if (isFromNamespace(keyString, namespace)) {
-            requestStore.delete(keyString)
-          }
-        }
+          yield* requestInvalidate(storageKey)
+          yield* removeSessionEntry(key.namespace, storageKey)
+        }),
+      clearNamespace: (namespace) =>
+        Effect.gen(function* () {
+          const entries = yield* readNamespaceIndex(namespace).pipe(
+            Effect.catchAll(() => Effect.succeed([] as const))
+          )
 
-        if (!sessionEnabled) {
-          return
-        }
+          yield* Effect.forEach(
+            entries,
+            (entry) =>
+              removeStoreKey(
+                entry.storageKey,
+                "Failed to clear namespace cache entry"
+              ).pipe(Effect.catchAll(() => Effect.void)),
+            { discard: true }
+          )
 
-        const namespacePath = toNamespacePath(rootDir, namespace)
-        yield* Effect.tryPromise({
-          try: async () => {
-            await Fs.rm(namespacePath, {
-              recursive: true,
-              force: true
-            })
-          },
-          catch: (error) =>
-            toPrimedCacheError(
-              `Failed to clear primed cache namespace: ${String(error)}`
-            )
+          yield* removeStoreKey(
+            toNamespaceIndexKey(namespace),
+            "Failed to clear namespace index"
+          ).pipe(Effect.catchAll(() => Effect.void))
+
+          yield* clearRequestNamespace(namespace)
         })
-      })
-  }
-}
+    } satisfies PrimedCacheService
+  })
 
 export class PrimedCache extends Effect.Service<PrimedCache>()(
   "@effect-langextract/PrimedCache",
   {
-    sync: () => makeCompositeCache()
+    dependencies: [KeyValueStore.layerMemory],
+    effect: makeCompositeCache()
   }
-) {}
+) {
+  static testLayer = (options?: PrimedCacheLayerOptions): Layer.Layer<PrimedCache> =>
+    makePrimedCacheLayer({
+      ...options,
+      enableSessionStore: options?.enableSessionStore ?? false,
+      enableRequestStore: options?.enableRequestStore ?? true
+    })
+}
 
 export const makePrimedCacheLayer = (
   options?: PrimedCacheLayerOptions
-): Layer.Layer<PrimedCache> =>
-  Layer.succeed(PrimedCache, PrimedCache.make(makeCompositeCache(options)))
+): Layer.Layer<PrimedCache> => {
+  const serviceLayer = Layer.effect(
+    PrimedCache,
+    makeCompositeCache(options).pipe(
+      Effect.map((service) => PrimedCache.make(service))
+    )
+  )
 
-export const PrimedCacheLive: Layer.Layer<PrimedCache> =
-  makePrimedCacheLayer()
+  return Layer.provide(
+    serviceLayer,
+    options?.keyValueStoreLayer ?? KeyValueStore.layerMemory
+  )
+}
 
-export const PrimedCacheTest: Layer.Layer<PrimedCache> =
-  makePrimedCacheLayer({
-    enableSessionStore: false,
-    enableRequestStore: true
-  })
+export const PrimedCacheLive: Layer.Layer<PrimedCache> = makePrimedCacheLayer()
+
+export const PrimedCacheTest: Layer.Layer<PrimedCache> = PrimedCache.testLayer()

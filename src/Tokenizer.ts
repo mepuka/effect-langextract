@@ -121,7 +121,12 @@ export class Tokenizer extends Effect.Service<Tokenizer>()(
       findSentenceRange: findSentenceRangeImpl
     } satisfies TokenizerService)
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<Tokenizer> = Tokenizer.Default
+
+  static testLayer = (service: TokenizerService): Layer.Layer<Tokenizer> =>
+    Layer.succeed(Tokenizer, Tokenizer.make(service))
+}
 
 export const RegexTokenizerLive: Layer.Layer<Tokenizer> = Tokenizer.Default
 
@@ -135,4 +140,4 @@ export const UnicodeTokenizerLive: Layer.Layer<Tokenizer> =
     } satisfies TokenizerService)
   )
 
-export const TokenizerTest: Layer.Layer<Tokenizer> = Tokenizer.Default
+export const TokenizerTest: Layer.Layer<Tokenizer> = Tokenizer.Test

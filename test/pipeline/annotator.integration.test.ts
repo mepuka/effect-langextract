@@ -5,51 +5,29 @@ import {
   Annotator,
   FormatHandler,
   LanguageModel,
-  PrimedCache,
   PromptBuilder,
   Resolver,
   ScoredOutput,
-  Tokenizer,
-  makePrimedCacheLayer
+  Tokenizer
 } from "../../src/index.js"
-import { makeProviderLanguageModelService } from "../../src/providers/AiAdapters.js"
 
-const makeProviderLanguageModelLayer = Layer.effect(
-  LanguageModel,
-  Effect.gen(function* () {
-    const cache = yield* PrimedCache
-    return LanguageModel.make(
-      makeProviderLanguageModelService({
-        provider: "anthropic",
-        modelId: "claude-3-5-sonnet-latest",
-        cache
-      })
-    )
-  })
-)
+const mockProviderLanguageModelLayer = LanguageModel.testLayer({
+  provider: "mock",
+  defaultText:
+    "[{\"extractionClass\":\"event\",\"extractionText\":\"Alice visited\"}]"
+})
 
 const annotateRuntimeLayer = (languageModelLayer: Layer.Layer<LanguageModel>) =>
-  Layer.provide(
-    Annotator.DefaultWithoutDependencies,
-    [
+  Layer.provide(Annotator.DefaultWithoutDependencies, [
+    Tokenizer.Default,
+    PromptBuilder.Default,
+    FormatHandler.Default,
+    Layer.provide(Resolver.DefaultWithoutDependencies, [
       Tokenizer.Default,
-      PromptBuilder.Default,
-      FormatHandler.Default,
-      Layer.provide(Resolver.DefaultWithoutDependencies, [
-        Tokenizer.Default,
-        FormatHandler.Default
-      ]),
-      languageModelLayer
-    ]
-  )
-
-const cachedProviderLanguageModelLayer = Layer.provide(
-  makeProviderLanguageModelLayer,
-  makePrimedCacheLayer({
-    enableRequestStore: true,
-    enableSessionStore: false
-  })
-)
+      FormatHandler.Default
+    ]),
+    languageModelLayer
+  ])
 
 describe("Annotator integration", () => {
   it.effect("emits aligned extractions from provider output", () =>
@@ -72,9 +50,7 @@ describe("Annotator integration", () => {
       expect((result.extractions[0]?.charInterval?.startPos ?? -1) >= 0).toBe(
         true
       )
-    }).pipe(
-      Effect.provide(annotateRuntimeLayer(cachedProviderLanguageModelLayer))
-    )
+    }).pipe(Effect.provide(annotateRuntimeLayer(mockProviderLanguageModelLayer)))
   )
 
   it.effect("keeps first-pass extraction when later pass overlaps", () =>
@@ -87,18 +63,8 @@ describe("Annotator integration", () => {
           const pass = options?.passNumber ?? 1
           const output =
             pass === 1
-              ? JSON.stringify([
-                  {
-                    extractionClass: "event",
-                    extractionText: "Alice visited"
-                  }
-                ])
-              : JSON.stringify([
-                  {
-                    extractionClass: "event",
-                    extractionText: "Alice visited Paris"
-                  }
-                ])
+              ? "[{\"extractionClass\":\"event\",\"extractionText\":\"Alice visited\"}]"
+              : "[{\"extractionClass\":\"event\",\"extractionText\":\"Alice visited Paris\"}]"
 
           return Effect.succeed(
             prompts.map(() => [
@@ -134,9 +100,7 @@ describe("Annotator integration", () => {
         })
       }).pipe(
         Effect.provide(
-          annotateRuntimeLayer(
-            Layer.succeed(LanguageModel, passAwareLanguageModel)
-          )
+          annotateRuntimeLayer(Layer.succeed(LanguageModel, passAwareLanguageModel))
         )
       )
 

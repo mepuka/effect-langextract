@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Schema, Stream } from "effect"
 
 import { TextChunk, chunkDocuments, makeBatches } from "./Chunking.js"
 import { AnnotatedDocument, Document, ExampleData, Extraction } from "./Data.js"
@@ -58,6 +58,18 @@ type AnnotatorDependencies = {
   readonly resolver: Resolver
 }
 
+const JsonString = Schema.parseJson()
+
+const encodeExtractionsForPrompt = (
+  extractions: ReadonlyArray<Extraction>
+): string => {
+  try {
+    return Schema.encodeSync(JsonString)(extractions)
+  } catch {
+    return "[]"
+  }
+}
+
 const buildPromptForChunk = (
   chunk: TextChunk,
   options: AnnotateOptions,
@@ -73,7 +85,7 @@ const buildPromptForChunk = (
         [
           `Example ${index + 1}:`,
           example.text,
-          JSON.stringify(example.extractions)
+          encodeExtractionsForPrompt(example.extractions)
         ].join("\n")
       )
       .join("\n\n")
@@ -332,8 +344,10 @@ export class Annotator extends Effect.Service<Annotator>()(
       } satisfies AnnotatorService
     })
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<Annotator> = Annotator.Default
+}
 
 export const AnnotatorLive: Layer.Layer<Annotator> = Annotator.Default
 
-export const AnnotatorTest: Layer.Layer<Annotator> = Annotator.Default
+export const AnnotatorTest: Layer.Layer<Annotator> = Annotator.Test

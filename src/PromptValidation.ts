@@ -95,8 +95,10 @@ export class PromptValidator extends Effect.Service<PromptValidator>()(
       handleAlignmentReport: handleAlignmentReportImpl
     } satisfies PromptValidatorService)
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<PromptValidator> = PromptValidator.Default
+}
 
 export const PromptValidatorLive: Layer.Layer<PromptValidator> = PromptValidator.Default
 
-export const PromptValidatorTest: Layer.Layer<PromptValidator> = PromptValidator.Default
+export const PromptValidatorTest: Layer.Layer<PromptValidator> = PromptValidator.Test

@@ -1,7 +1,8 @@
-import * as Fs from "node:fs/promises"
-import * as Path from "node:path"
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
+import * as BunKeyValueStore from "@effect/platform-bun/BunKeyValueStore"
+import * as FileSystem from "@effect/platform/FileSystem"
 
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
@@ -13,7 +14,20 @@ import {
 } from "../../src/index.js"
 
 const tempRoot = (name: string): string =>
-  Path.join("/tmp", `effect-langextract-${name}-${Date.now()}-${Math.random()}`)
+  `/tmp/effect-langextract-${name}-${Date.now()}-${Math.random()}`
+
+const removePath = (path: string): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    yield* fileSystem.remove(path, { recursive: true, force: true })
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+const makeSessionCacheLayer = (root: string) =>
+  makePrimedCacheLayer({
+    keyValueStoreLayer: BunKeyValueStore.layerFileSystem(root).pipe(Layer.orDie),
+    enableRequestStore: false,
+    enableSessionStore: true
+  })
 
 describe("Primed cache session store", () => {
   it.effect("persists entries across cache layer instances", () =>
@@ -31,10 +45,7 @@ describe("Primed cache session store", () => {
         ttlSeconds: 120
       })
 
-      yield* Effect.tryPromise({
-        try: () => Fs.rm(root, { recursive: true, force: true }),
-        catch: (error) => new Error(String(error))
-      })
+      yield* removePath(root)
 
       yield* Effect.gen(function* () {
         const cache = yield* PrimedCache
@@ -43,35 +54,16 @@ describe("Primed cache session store", () => {
           [new ScoredOutput({ provider: "test", output: "cached", score: 1 })],
           { policy, isDeterministic: true }
         )
-      }).pipe(
-        Effect.provide(
-          makePrimedCacheLayer({
-            sessionRootDir: root,
-            enableRequestStore: false,
-            enableSessionStore: true
-          })
-        )
-      )
+      }).pipe(Effect.provide(makeSessionCacheLayer(root)))
 
       const reloaded = yield* Effect.gen(function* () {
         const cache = yield* PrimedCache
         return yield* cache.get(key, { policy, isDeterministic: true })
-      }).pipe(
-        Effect.provide(
-          makePrimedCacheLayer({
-            sessionRootDir: root,
-            enableRequestStore: false,
-            enableSessionStore: true
-          })
-        )
-      )
+      }).pipe(Effect.provide(makeSessionCacheLayer(root)))
 
       expect(reloaded?.[0]?.output).toBe("cached")
 
-      yield* Effect.tryPromise({
-        try: () => Fs.rm(root, { recursive: true, force: true }),
-        catch: (error) => new Error(String(error))
-      })
+      yield* removePath(root)
     })
   )
 

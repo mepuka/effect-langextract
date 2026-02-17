@@ -30,6 +30,8 @@ export interface FormatHandlerService {
   readonly config: FormatHandlerConfig
 }
 
+const JsonString = Schema.parseJson()
+
 const stripCodeFences = (text: string): string =>
   text
     .replace(/^```(?:json|yaml)?\s*/i, "")
@@ -57,22 +59,25 @@ const extractJsonCandidate = (text: string): string => {
   return trimmed
 }
 
-const parseJsonOutput = (
-  text: string,
+const normalizeRecords = (
+  parsed: unknown,
   config: FormatHandlerConfig
 ): ReadonlyArray<Record<string, unknown>> => {
-  const normalized = config.useFences ? extractJsonCandidate(text) : text.trim()
-  const parsed = JSON.parse(normalized) as unknown
-
   if (Array.isArray(parsed)) {
-    return parsed as ReadonlyArray<Record<string, unknown>>
+    return parsed.filter(
+      (item): item is Record<string, unknown> =>
+        typeof item === "object" && item !== null
+    )
   }
 
   if (typeof parsed === "object" && parsed !== null) {
     const asRecord = parsed as Record<string, unknown>
     const wrapperKey = config.wrapperKey ?? EXTRACTIONS_KEY
     if (config.useWrapper && Array.isArray(asRecord[wrapperKey])) {
-      return asRecord[wrapperKey] as ReadonlyArray<Record<string, unknown>>
+      return asRecord[wrapperKey].filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === "object" && item !== null
+      )
     }
     return [asRecord]
   }
@@ -80,28 +85,47 @@ const parseJsonOutput = (
   return []
 }
 
+const parseJsonOutput = (
+  text: string,
+  config: FormatHandlerConfig
+): Effect.Effect<ReadonlyArray<Record<string, unknown>>, FormatParseError> => {
+  const normalized = config.useFences ? extractJsonCandidate(text) : text.trim()
+
+  return Schema.decodeUnknown(JsonString)(normalized).pipe(
+    Effect.map((parsed) => normalizeRecords(parsed, config)),
+    Effect.mapError(
+      (error) =>
+        new FormatParseError({
+          message: `Failed to parse model output (${config.formatType}): ${String(error)}`
+        })
+    )
+  )
+}
+
 const parseOutputImpl = (
   text: string,
   config: FormatHandlerConfig,
   options?: { strict?: boolean }
 ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, FormatParseError> =>
-  Effect.try({
-    try: () => parseJsonOutput(text, config),
-    catch: (error) =>
-      new FormatParseError({
-        message: `Failed to parse model output (${config.formatType}): ${String(error)}`
-      })
-  }).pipe(
+  parseJsonOutput(text, config).pipe(
     Effect.catchAll((error) =>
       options?.strict ?? config.strictFences
         ? Effect.fail(error)
-        : Effect.succeed([])
+        : Effect.succeed([] as const)
     )
   )
 
+const encodeExtractionExample = (extractions: ReadonlyArray<Extraction>): string => {
+  try {
+    return Schema.encodeSync(JsonString)(extractions)
+  } catch {
+    return "[]"
+  }
+}
+
 export const makeFormatHandler = (config: FormatHandlerConfig): FormatHandlerService => ({
   config,
-  formatExtractionExample: (extractions) => JSON.stringify(extractions, null, 2),
+  formatExtractionExample: encodeExtractionExample,
   parseOutput: (text, options) => parseOutputImpl(text, config, options)
 })
 
@@ -110,7 +134,9 @@ export class FormatHandler extends Effect.Service<FormatHandler>()(
   {
     sync: () => makeFormatHandler(new FormatHandlerConfig({}))
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<FormatHandler> = FormatHandler.Default
+}
 
 export const makeFormatHandlerLayer = (
   config: FormatHandlerConfig
@@ -119,4 +145,4 @@ export const makeFormatHandlerLayer = (
 
 export const FormatHandlerLive: Layer.Layer<FormatHandler> = FormatHandler.Default
 
-export const FormatHandlerTest: Layer.Layer<FormatHandler> = FormatHandler.Default
+export const FormatHandlerTest: Layer.Layer<FormatHandler> = FormatHandler.Test

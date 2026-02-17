@@ -3,10 +3,15 @@
   "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "effect-langextract": "./src/main.ts"
+  },
   "scripts": {
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
+    "cli": "bun run src/main.ts",
     "test": "vitest run",
+    "test:live": "LANGEXTRACT_LIVE_PROVIDER_SMOKE=true vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
   },

@@ -15,8 +15,10 @@ export class RuntimeControl extends Effect.Service<RuntimeControl>()(
   {
     sync: makeNoopRuntimeControl
   }
-) {}
+) {
+  static readonly Test: Layer.Layer<RuntimeControl> = RuntimeControl.Default
+}
 
 export const RuntimeControlLive: Layer.Layer<RuntimeControl> = RuntimeControl.Default
 
-export const RuntimeControlTest: Layer.Layer<RuntimeControl> = RuntimeControl.Default
+export const RuntimeControlTest: Layer.Layer<RuntimeControl> = RuntimeControl.Test

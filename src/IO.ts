@@ -1,6 +1,11 @@
-import { Effect } from "effect"
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as HttpClient from "@effect/platform/HttpClient"
+import * as HttpClientResponse from "@effect/platform/HttpClientResponse"
+import { Effect, Schema } from "effect"
 
 import { IoError } from "./Errors.js"
+
+const JsonString = Schema.parseJson()
 
 const toIoError = (message: string) => (error: unknown): IoError =>
   error instanceof IoError
@@ -8,6 +13,11 @@ const toIoError = (message: string) => (error: unknown): IoError =>
     : new IoError({
         message: `${message}: ${String(error)}`
       })
+
+const encodeJson = (value: unknown): Effect.Effect<string, IoError> =>
+  Schema.encode(JsonString)(value).pipe(
+    Effect.mapError(toIoError("Failed to encode JSON value"))
+  )
 
 export const isUrl = (value: string): boolean => {
   try {
@@ -18,42 +28,36 @@ export const isUrl = (value: string): boolean => {
   }
 }
 
-export const downloadText = (url: string): Effect.Effect<string, IoError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new IoError({
-          message: `Failed to fetch URL (${response.status}): ${url}`
-        })
-      }
-      return response.text()
-    },
-    catch: toIoError(`Failed to fetch URL: ${url}`)
-  })
+export const downloadText = (url: string): Effect.Effect<string, IoError, HttpClient.HttpClient> =>
+  HttpClient.get(url).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap((response) => response.text),
+    Effect.mapError(toIoError(`Failed to fetch URL: ${url}`))
+  )
 
-export const readTextFile = (path: string): Effect.Effect<string, IoError> =>
-  Effect.tryPromise({
-    try: () => Bun.file(path).text(),
-    catch: toIoError(`Failed to read file: ${path}`)
-  })
+export const readTextFile = (
+  path: string
+): Effect.Effect<string, IoError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    return yield* fileSystem.readFileString(path)
+  }).pipe(Effect.mapError(toIoError(`Failed to read file: ${path}`)))
 
 export const writeTextFile = (
   path: string,
   content: string
-): Effect.Effect<void, IoError> =>
-  Effect.tryPromise({
-    try: async () => {
-      await Bun.write(path, content)
-    },
-    catch: toIoError(`Failed to write file: ${path}`)
-  })
+): Effect.Effect<void, IoError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    yield* fileSystem.writeFileString(path, content)
+  }).pipe(Effect.mapError(toIoError(`Failed to write file: ${path}`)))
 
 export const writeJsonl = (
   path: string,
   rows: ReadonlyArray<unknown>
-): Effect.Effect<void, IoError> =>
-  writeTextFile(
-    path,
-    rows.map((row) => JSON.stringify(row)).join("\n") + "\n"
+): Effect.Effect<void, IoError, FileSystem.FileSystem> =>
+  Effect.forEach(rows, (row) => encodeJson(row)).pipe(
+    Effect.flatMap((encodedRows) =>
+      writeTextFile(path, `${encodedRows.join("\n")}\n`)
+    )
   )
