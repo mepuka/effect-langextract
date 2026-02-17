@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
+  AlignmentError,
   Extraction,
   FormatHandler,
   FormatHandlerConfig,
@@ -74,7 +75,10 @@ describe("Resolver parity hardening", () => {
         ],
         "Patient with arthritis is prescribed Naprosyn.",
         0,
-        0
+        0,
+        {
+          enableFuzzyAlignment: false
+        }
       )
 
       expect(aligned[0]?.alignmentStatus).toBeUndefined()
@@ -182,6 +186,158 @@ describe("Resolver parity hardening", () => {
 
       const extracted = source.slice(startPos ?? 0, endPos ?? 0)
       expect(extracted.toLowerCase()).toContain("prednisone")
+    }).pipe(Effect.provide(resolverLayer))
+  )
+
+  it.effect("prefers longer multiword extractions when ordering conflicts", () =>
+    Effect.gen(function* () {
+      const resolver = yield* Resolver
+      const aligned = yield* resolver.align(
+        [
+          new Extraction({
+            extractionClass: "medication",
+            extractionText: "Naprosyn"
+          }),
+          new Extraction({
+            extractionClass: "medication",
+            extractionText: "Naprosyn and prednisone"
+          })
+        ],
+        "Patient is prescribed Naprosyn and prednisone for treatment.",
+        0,
+        0,
+        {
+          enableFuzzyAlignment: false
+        }
+      )
+
+      expect(aligned[0]?.alignmentStatus).toBeUndefined()
+      expect(aligned[0]?.charInterval).toBeUndefined()
+      expect(aligned[1]?.alignmentStatus).toBe("match_exact")
+      expect(aligned[1]?.charInterval?.startPos).toBe(22)
+      expect(aligned[1]?.charInterval?.endPos).toBe(45)
+    }).pipe(Effect.provide(resolverLayer))
+  )
+
+  it.effect("handles unicode punctuation token boundaries", () =>
+    Effect.gen(function* () {
+      const resolver = yield* Resolver
+      const aligned = yield* resolver.align(
+        [
+          new Extraction({
+            extractionClass: "word",
+            extractionText: "Separated"
+          }),
+          new Extraction({
+            extractionClass: "word",
+            extractionText: "by"
+          }),
+          new Extraction({
+            extractionClass: "word",
+            extractionText: "en–dashes"
+          })
+        ],
+        "Separated–by–en–dashes.",
+        0,
+        0
+      )
+
+      expect(aligned[0]?.alignmentStatus).toBe("match_exact")
+      expect(aligned[0]?.charInterval?.startPos).toBe(0)
+      expect(aligned[0]?.charInterval?.endPos).toBe(9)
+      expect(aligned[1]?.alignmentStatus).toBe("match_exact")
+      expect(aligned[1]?.charInterval?.startPos).toBe(10)
+      expect(aligned[1]?.charInterval?.endPos).toBe(12)
+      expect(aligned[2]?.alignmentStatus).toBe("match_exact")
+      expect(aligned[2]?.charInterval?.startPos).toBe(13)
+      expect(aligned[2]?.charInterval?.endPos).toBe(22)
+    }).pipe(Effect.provide(resolverLayer))
+  )
+
+  it.effect("respects token and character offsets for chunk alignment", () =>
+    Effect.gen(function* () {
+      const resolver = yield* Resolver
+      const source = "sample text with some extractions."
+
+      const aligned = yield* resolver.align(
+        [
+          new Extraction({
+            extractionClass: "condition",
+            extractionText: "sample"
+          }),
+          new Extraction({
+            extractionClass: "condition",
+            extractionText: "extractions"
+          })
+        ],
+        source,
+        3,
+        10,
+        {
+          enableFuzzyAlignment: false
+        }
+      )
+
+      expect(aligned[0]?.alignmentStatus).toBe("match_exact")
+      expect(aligned[0]?.tokenInterval?.startIndex).toBe(3)
+      expect(aligned[0]?.tokenInterval?.endIndex).toBe(4)
+      expect(aligned[0]?.charInterval?.startPos).toBe(10)
+      expect(aligned[0]?.charInterval?.endPos).toBe(16)
+
+      expect(aligned[1]?.alignmentStatus).toBe("match_exact")
+      expect(aligned[1]?.tokenInterval?.startIndex).toBe(7)
+      expect(aligned[1]?.tokenInterval?.endIndex).toBe(8)
+      expect(aligned[1]?.charInterval?.startPos).toBe(32)
+      expect(aligned[1]?.charInterval?.endPos).toBe(43)
+    }).pipe(Effect.provide(resolverLayer))
+  )
+
+  it.effect("falls back to fuzzy when lesser is disabled", () =>
+    Effect.gen(function* () {
+      const resolver = yield* Resolver
+      const aligned = yield* resolver.align(
+        [
+          new Extraction({
+            extractionClass: "condition",
+            extractionText: "patient heart problems today"
+          })
+        ],
+        "Patient has heart problems today.",
+        0,
+        0,
+        {
+          enableFuzzyAlignment: true,
+          acceptMatchLesser: false
+        }
+      )
+
+      expect(aligned[0]?.alignmentStatus).toBe("match_fuzzy")
+      expect(aligned[0]?.tokenInterval?.startIndex).toBe(0)
+      expect(aligned[0]?.tokenInterval?.endIndex).toBe(5)
+      expect(aligned[0]?.charInterval?.startPos).toBe(0)
+      expect(aligned[0]?.charInterval?.endPos).toBe(32)
+    }).pipe(Effect.provide(resolverLayer))
+  )
+
+  it.effect("fails alignment on empty source text", () =>
+    Effect.gen(function* () {
+      const resolver = yield* Resolver
+      const error = yield* resolver
+        .align(
+          [
+            new Extraction({
+              extractionClass: "medication",
+              extractionText: "Naprosyn"
+            })
+          ],
+          "",
+          0,
+          0
+        )
+        .pipe(Effect.flip)
+
+      expect(error).toBeInstanceOf(AlignmentError)
+      expect(error.message).toContain("Source tokens and extraction tokens cannot be empty")
     }).pipe(Effect.provide(resolverLayer))
   )
 })

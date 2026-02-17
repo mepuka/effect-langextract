@@ -39,26 +39,37 @@ export interface TokenizerService {
   ) => TokenInterval
 }
 
+const DigitsPattern = /^\d+$/u
+const WordPattern = /^(?:[^\W\d_]+|\d+)$/u
+const TokenPattern = /[^\W\d_]+|\d+|([^\w\s]|_)\1*/gu
+
 const tokenTypeFromText = (value: string): TokenType => {
-  if (/^[0-9]+$/.test(value)) {
+  if (DigitsPattern.test(value)) {
     return "number"
   }
-  if (/^[\p{L}\p{M}_-]+$/u.test(value)) {
+  if (WordPattern.test(value)) {
     return "word"
   }
   return "punctuation"
 }
 
 const regexTokenize = (text: string): TokenizedText => {
-  const matcher = /\S+/g
+  const matcher = new RegExp(TokenPattern)
   const tokens: Array<Token> = []
   let match: RegExpExecArray | null = matcher.exec(text)
+  let previousEnd = 0
 
   while (match !== null) {
     const value = match[0]
     const startPos = match.index
     const endPos = startPos + value.length
-    const before = text.slice(0, startPos)
+    const gap = text.slice(previousEnd, startPos)
+    const hasNewline =
+      tokens.length > 0
+      && (
+        gap.includes("\n")
+        || gap.includes("\r")
+      )
 
     tokens.push(
       new Token({
@@ -69,10 +80,11 @@ const regexTokenize = (text: string): TokenizedText => {
           startPos,
           endPos
         }),
-        firstTokenAfterNewline: before.endsWith("\n")
+        firstTokenAfterNewline: hasNewline
       })
     )
 
+    previousEnd = endPos
     match = matcher.exec(text)
   }
 
