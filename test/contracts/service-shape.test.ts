@@ -1,11 +1,14 @@
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
   AlignmentExecutor,
   Annotator,
   AnthropicConfig,
+  CharInterval,
   DocumentIdGenerator,
+  ExampleData,
+  Extraction,
   FormatHandler,
   GeminiConfig,
   LanguageModel,
@@ -102,4 +105,80 @@ describe("Service contracts", () => {
     expect(typeof OllamaConfig.Test).toBe("object")
     expect(typeof OllamaConfig.testLayer).toBe("function")
   })
+
+  it("dependency-based services expose DefaultWithoutDependencies", () => {
+    expect(typeof Resolver.DefaultWithoutDependencies).toBe("object")
+    expect(typeof PromptValidator.DefaultWithoutDependencies).toBe("object")
+    expect(typeof AlignmentExecutor.DefaultWithoutDependencies).toBe("object")
+    expect(typeof Annotator.DefaultWithoutDependencies).toBe("object")
+  })
+
+  it.effect("PromptValidator overrides dependencies deterministically", () =>
+    Effect.gen(function* () {
+      const resolverStub = Resolver.make({
+        resolve: () => Effect.succeed([]),
+        align: (extractions) =>
+          Effect.succeed(
+            extractions.map(
+              (extraction, index) =>
+                new Extraction({
+                  extractionClass: extraction.extractionClass,
+                  extractionText: extraction.extractionText,
+                  alignmentStatus: "match_lesser",
+                  extractionIndex: extraction.extractionIndex ?? index,
+                  groupIndex: extraction.groupIndex ?? 0,
+                  charInterval: new CharInterval({ startPos: 0, endPos: 1 }),
+                  tokenInterval: { startIndex: 0, endIndex: 1 }
+                })
+            )
+          )
+      })
+
+      const promptValidatorLayer = Layer.provide(
+        PromptValidator.DefaultWithoutDependencies,
+        [Layer.succeed(Resolver, resolverStub)]
+      )
+
+      const validate = Effect.gen(function* () {
+        const validator = yield* PromptValidator
+        return yield* validator.validatePromptAlignment([
+          new ExampleData({
+            text: "Alice visited Paris.",
+            extractions: [
+              new Extraction({
+                extractionClass: "person",
+                extractionText: "Alice"
+              })
+            ]
+          })
+        ])
+      }).pipe(Effect.provide(promptValidatorLayer))
+
+      const first = yield* validate
+      const second = yield* validate
+
+      expect(first.issues.length).toBe(1)
+      expect(first.issues[0]?.issueKind).toBe("non_exact")
+      expect(second.issues).toEqual(first.issues)
+    })
+  )
+
+  it.effect("stateful testLayer factories create fresh deterministic instances", () =>
+    Effect.gen(function* () {
+      const nextDocumentId = Effect.gen(function* () {
+        const generator = yield* DocumentIdGenerator
+        return yield* generator.next
+      })
+
+      const first = yield* nextDocumentId.pipe(
+        Effect.provide(DocumentIdGenerator.testLayer())
+      )
+      const second = yield* nextDocumentId.pipe(
+        Effect.provide(DocumentIdGenerator.testLayer())
+      )
+
+      expect(first).toBe("doc_00000001")
+      expect(second).toBe("doc_00000001")
+    })
+  )
 })

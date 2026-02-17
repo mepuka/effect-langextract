@@ -2,7 +2,7 @@ import { Command, Options } from "@effect/cli"
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
 import * as FileSystem from "@effect/platform/FileSystem"
-import { Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Option, Schema } from "effect"
 import * as Console from "effect/Console"
 
 import { AlignmentExecutor } from "./AlignmentExecutor.js"
@@ -10,7 +10,7 @@ import { Annotator } from "./Annotator.js"
 import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "./Data.js"
 import { decodeAnnotatedDocumentJson, encodeAnnotatedDocumentJson } from "./DataLib.js"
 import { InferenceConfigError } from "./Errors.js"
-import { extract } from "./Extract.js"
+import { ExtractionConfig, extract } from "./Extract.js"
 import { FormatHandler } from "./FormatHandler.js"
 import { readTextFile, writeJsonl, writeTextFile } from "./IO.js"
 import { LanguageModel } from "./LanguageModel.js"
@@ -47,6 +47,8 @@ export type ProviderName = typeof ProviderName.Type
 
 export const OutputFormat = Schema.Literal("json", "jsonl", "html")
 export type OutputFormat = typeof OutputFormat.Type
+
+type ConfigSource = "cli" | "env" | "default"
 
 export interface ExecuteExtractCommandOptions {
   text?: string | undefined
@@ -146,47 +148,6 @@ const defaultsByProvider: Readonly<Record<ProviderName, string>> = {
   ollama: "llama3.2:latest"
 }
 
-const parseBoolean = (value: string | undefined): boolean | undefined => {
-  if (value === undefined) {
-    return undefined
-  }
-  const normalized = value.trim().toLowerCase()
-  if (
-    normalized === "1" ||
-    normalized === "true" ||
-    normalized === "yes" ||
-    normalized === "on"
-  ) {
-    return true
-  }
-  if (
-    normalized === "0" ||
-    normalized === "false" ||
-    normalized === "no" ||
-    normalized === "off"
-  ) {
-    return false
-  }
-  return undefined
-}
-
-const parseNumber = (value: string | undefined): number | undefined => {
-  if (value === undefined) {
-    return undefined
-  }
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
-
-const parseInteger = (value: string | undefined): number | undefined => {
-  const parsed = parseNumber(value)
-  if (parsed === undefined) {
-    return undefined
-  }
-  const integer = Math.trunc(parsed)
-  return Number.isFinite(integer) ? integer : undefined
-}
-
 const parseProvider = (value: string | undefined): ProviderName | undefined => {
   if (value === undefined) {
     return undefined
@@ -214,6 +175,19 @@ const parseOutput = (value: string | undefined): OutputFormat | undefined => {
   return undefined
 }
 
+const resolveConfigSource = (
+  cliValue: unknown,
+  envValue: unknown
+): ConfigSource => {
+  if (cliValue !== undefined) {
+    return "cli"
+  }
+  if (envValue !== undefined) {
+    return "env"
+  }
+  return "default"
+}
+
 const pickFirstDefined = <A>(
   ...values: ReadonlyArray<A | undefined>
 ): A | undefined => values.find((value) => value !== undefined)
@@ -222,139 +196,147 @@ const defaultCommandConfig = {
   prompt: "Extract structured entities.",
   examplesFile: "examples.json",
   output: "json" as const,
-  maxCharBuffer: 1000,
-  batchLength: 10,
-  batchConcurrency: 1,
-  providerConcurrency: 8,
-  extractionPasses: 1,
-  primedCacheEnabled: true,
-  primedCacheDir: ".cache/langextract/primed",
-  primedCacheNamespace: "langextract",
-  primedCacheTtlSeconds: 86_400,
-  primedCacheDeterministicOnly: true,
-  clearPrimedCacheOnStart: false,
   ollamaBaseUrl: "http://localhost:11434"
 }
 
-export const resolveExtractCommandConfig = (
+const setConfigValue = (
+  map: Map<string, string>,
+  key: string,
+  value: string | number | boolean | undefined
+): void => {
+  if (value === undefined) {
+    return
+  }
+  map.set(key, String(value))
+}
+
+const buildExtractionConfigMap = (
   options: ExecuteExtractCommandOptions,
-  envInput?: Readonly<Record<string, string | undefined>>
-): ResolvedExtractCommandConfig => {
-  const env = envInput ?? options.env ?? {}
+  env: Readonly<Record<string, string | undefined>>
+): Map<string, string> => {
+  const map = new Map<string, string>()
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) {
+      map.set(key, value)
+    }
+  }
 
   const providerFromCli = options.provider
   const providerFromEnv = parseProvider(
     pickFirstDefined(env.LANGEXTRACT_PROVIDER, env.PROVIDER)
   )
-
   const providerForModelDefault = providerFromCli ?? providerFromEnv ?? "gemini"
 
-  const modelId =
-    pickFirstDefined(
-      options.modelId,
-      env.MODEL_ID,
-      defaultsByProvider[providerForModelDefault]
-    ) ?? defaultsByProvider[providerForModelDefault]
+  setConfigValue(
+    map,
+    "MODEL_ID",
+    options.modelId ?? env.MODEL_ID ?? defaultsByProvider[providerForModelDefault]
+  )
+  setConfigValue(map, "MAX_CHAR_BUFFER", options.maxCharBuffer)
+  setConfigValue(map, "TEMPERATURE", options.temperature)
+  setConfigValue(map, "BATCH_LENGTH", options.batchLength)
+  setConfigValue(map, "BATCH_CONCURRENCY", options.batchConcurrency)
+  setConfigValue(map, "PROVIDER_CONCURRENCY", options.providerConcurrency)
+  setConfigValue(map, "MAX_BATCH_INPUT_TOKENS", options.maxBatchInputTokens)
+  setConfigValue(map, "EXTRACTION_PASSES", options.extractionPasses)
+  setConfigValue(map, "CONTEXT_WINDOW_CHARS", options.contextWindowChars)
+  setConfigValue(map, "PRIMED_CACHE_ENABLED", options.primedCacheEnabled)
+  setConfigValue(map, "PRIMED_CACHE_DIR", options.primedCacheDir)
+  setConfigValue(map, "PRIMED_CACHE_NAMESPACE", options.primedCacheNamespace)
+  setConfigValue(map, "PRIMED_CACHE_TTL_SECONDS", options.primedCacheTtlSeconds)
+  setConfigValue(
+    map,
+    "PRIMED_CACHE_DETERMINISTIC_ONLY",
+    options.primedCacheDeterministicOnly
+  )
+  setConfigValue(
+    map,
+    "CLEAR_PRIMED_CACHE_ON_START",
+    options.clearPrimedCacheOnStart
+  )
 
-  const provider =
-    providerFromCli ??
-    providerFromEnv ??
-    detectProviderFromModelId(modelId)
-
-  return {
-    text: options.text,
-    file: options.file,
-    url: options.url,
-    prompt:
-      pickFirstDefined(options.prompt, env.PROMPT_DESCRIPTION) ??
-      defaultCommandConfig.prompt,
-    examplesFile:
-      pickFirstDefined(options.examplesFile, env.EXAMPLES_FILE) ??
-      defaultCommandConfig.examplesFile,
-    provider,
-    modelId,
-    temperature: pickFirstDefined(
-      options.temperature,
-      parseNumber(env.TEMPERATURE)
-    ),
-    output:
-      pickFirstDefined(options.output, parseOutput(env.OUTPUT_FORMAT)) ??
-      defaultCommandConfig.output,
-    outputPath: pickFirstDefined(options.outputPath, env.OUTPUT_PATH),
-    maxCharBuffer:
-      pickFirstDefined(options.maxCharBuffer, parseInteger(env.MAX_CHAR_BUFFER)) ??
-      defaultCommandConfig.maxCharBuffer,
-    batchLength:
-      pickFirstDefined(options.batchLength, parseInteger(env.BATCH_LENGTH)) ??
-      defaultCommandConfig.batchLength,
-    batchConcurrency:
-      pickFirstDefined(
-        options.batchConcurrency,
-        parseInteger(env.BATCH_CONCURRENCY)
-      ) ?? defaultCommandConfig.batchConcurrency,
-    providerConcurrency:
-      pickFirstDefined(
-        options.providerConcurrency,
-        parseInteger(env.PROVIDER_CONCURRENCY)
-      ) ?? defaultCommandConfig.providerConcurrency,
-    extractionPasses:
-      pickFirstDefined(options.extractionPasses, parseInteger(env.EXTRACTION_PASSES)) ??
-      defaultCommandConfig.extractionPasses,
-    contextWindowChars: pickFirstDefined(
-      options.contextWindowChars,
-      parseInteger(env.CONTEXT_WINDOW_CHARS)
-    ),
-    maxBatchInputTokens: pickFirstDefined(
-      options.maxBatchInputTokens,
-      parseInteger(env.MAX_BATCH_INPUT_TOKENS)
-    ),
-    primedCacheEnabled:
-      pickFirstDefined(
-        options.primedCacheEnabled,
-        parseBoolean(env.PRIMED_CACHE_ENABLED)
-      ) ?? defaultCommandConfig.primedCacheEnabled,
-    primedCacheDir:
-      pickFirstDefined(options.primedCacheDir, env.PRIMED_CACHE_DIR) ??
-      defaultCommandConfig.primedCacheDir,
-    primedCacheNamespace:
-      pickFirstDefined(options.primedCacheNamespace, env.PRIMED_CACHE_NAMESPACE) ??
-      defaultCommandConfig.primedCacheNamespace,
-    primedCacheTtlSeconds:
-      pickFirstDefined(
-        options.primedCacheTtlSeconds,
-        parseInteger(env.PRIMED_CACHE_TTL_SECONDS)
-      ) ?? defaultCommandConfig.primedCacheTtlSeconds,
-    primedCacheDeterministicOnly:
-      pickFirstDefined(
-        options.primedCacheDeterministicOnly,
-        parseBoolean(env.PRIMED_CACHE_DETERMINISTIC_ONLY)
-      ) ?? defaultCommandConfig.primedCacheDeterministicOnly,
-    clearPrimedCacheOnStart:
-      pickFirstDefined(
-        options.clearPrimedCacheOnStart,
-        parseBoolean(env.CLEAR_PRIMED_CACHE_ON_START)
-      ) ?? defaultCommandConfig.clearPrimedCacheOnStart,
-    openAiApiKey:
-      pickFirstDefined(options.openAiApiKey, env.OPENAI_API_KEY) ?? "",
-    openAiBaseUrl: pickFirstDefined(options.openAiBaseUrl, env.OPENAI_BASE_URL),
-    openAiOrganization: pickFirstDefined(
-      options.openAiOrganization,
-      env.OPENAI_ORGANIZATION
-    ),
-    geminiApiKey:
-      pickFirstDefined(options.geminiApiKey, env.GEMINI_API_KEY) ?? "",
-    geminiBaseUrl: pickFirstDefined(options.geminiBaseUrl, env.GEMINI_BASE_URL),
-    anthropicApiKey:
-      pickFirstDefined(options.anthropicApiKey, env.ANTHROPIC_API_KEY) ?? "",
-    anthropicBaseUrl: pickFirstDefined(
-      options.anthropicBaseUrl,
-      env.ANTHROPIC_BASE_URL
-    ),
-    ollamaBaseUrl:
-      pickFirstDefined(options.ollamaBaseUrl, env.OLLAMA_BASE_URL) ??
-      defaultCommandConfig.ollamaBaseUrl
-  }
+  return map
 }
+
+export const resolveExtractCommandConfig = (
+  options: ExecuteExtractCommandOptions,
+  envInput?: Readonly<Record<string, string | undefined>>
+): Effect.Effect<ResolvedExtractCommandConfig, InferenceConfigError> =>
+  Effect.gen(function* () {
+    const env = envInput ?? options.env ?? {}
+    const providerFromCli = options.provider
+    const providerFromEnv = parseProvider(
+      pickFirstDefined(env.LANGEXTRACT_PROVIDER, env.PROVIDER)
+    )
+
+    const extractionConfigMap = buildExtractionConfigMap(options, env)
+    const extractedConfig = yield* ConfigProvider
+      .fromMap(extractionConfigMap)
+      .load(ExtractionConfig).pipe(
+        Effect.mapError(
+          (error) =>
+            new InferenceConfigError({
+              message: `Failed to decode extraction config: ${String(error)}`
+            })
+        )
+      )
+
+    const provider =
+      providerFromCli ??
+      providerFromEnv ??
+      detectProviderFromModelId(extractedConfig.modelId)
+
+    return {
+      text: options.text,
+      file: options.file,
+      url: options.url,
+      prompt:
+        pickFirstDefined(options.prompt, env.PROMPT_DESCRIPTION) ??
+        defaultCommandConfig.prompt,
+      examplesFile:
+        pickFirstDefined(options.examplesFile, env.EXAMPLES_FILE) ??
+        defaultCommandConfig.examplesFile,
+      provider,
+      modelId: extractedConfig.modelId,
+      temperature: Option.getOrUndefined(extractedConfig.temperature),
+      output:
+        pickFirstDefined(options.output, parseOutput(env.OUTPUT_FORMAT)) ??
+        defaultCommandConfig.output,
+      outputPath: pickFirstDefined(options.outputPath, env.OUTPUT_PATH),
+      maxCharBuffer: extractedConfig.maxCharBuffer,
+      batchLength: extractedConfig.batchLength,
+      batchConcurrency: extractedConfig.batchConcurrency,
+      providerConcurrency: extractedConfig.providerConcurrency,
+      extractionPasses: extractedConfig.extractionPasses,
+      contextWindowChars: Option.getOrUndefined(extractedConfig.contextWindowChars),
+      maxBatchInputTokens: Option.getOrUndefined(extractedConfig.maxBatchInputTokens),
+      primedCacheEnabled: extractedConfig.primedCacheEnabled,
+      primedCacheDir: extractedConfig.primedCacheDir,
+      primedCacheNamespace: extractedConfig.primedCacheNamespace,
+      primedCacheTtlSeconds: extractedConfig.primedCacheTtlSeconds,
+      primedCacheDeterministicOnly: extractedConfig.primedCacheDeterministicOnly,
+      clearPrimedCacheOnStart: extractedConfig.clearPrimedCacheOnStart,
+      openAiApiKey:
+        pickFirstDefined(options.openAiApiKey, env.OPENAI_API_KEY) ?? "",
+      openAiBaseUrl: pickFirstDefined(options.openAiBaseUrl, env.OPENAI_BASE_URL),
+      openAiOrganization: pickFirstDefined(
+        options.openAiOrganization,
+        env.OPENAI_ORGANIZATION
+      ),
+      geminiApiKey:
+        pickFirstDefined(options.geminiApiKey, env.GEMINI_API_KEY) ?? "",
+      geminiBaseUrl: pickFirstDefined(options.geminiBaseUrl, env.GEMINI_BASE_URL),
+      anthropicApiKey:
+        pickFirstDefined(options.anthropicApiKey, env.ANTHROPIC_API_KEY) ?? "",
+      anthropicBaseUrl: pickFirstDefined(
+        options.anthropicBaseUrl,
+        env.ANTHROPIC_BASE_URL
+      ),
+      ollamaBaseUrl:
+        pickFirstDefined(options.ollamaBaseUrl, env.OLLAMA_BASE_URL) ??
+        defaultCommandConfig.ollamaBaseUrl
+    }
+  })
 
 const ExamplesJson = Schema.parseJson(Schema.Array(ExampleData))
 
@@ -485,6 +467,18 @@ const makeProviderLayer = (
   }
 }
 
+const resolverBaseLayer = Layer.provide(Resolver.DefaultWithoutDependencies, [
+  Tokenizer.Default,
+  FormatHandler.Default
+])
+
+const promptValidatorBaseLayer = Layer.provide(
+  PromptValidator.DefaultWithoutDependencies,
+  [resolverBaseLayer]
+)
+
+const visualizerBaseLayer = Visualizer.Default
+
 const makeExecutionLayer = (
   config: ResolvedExtractCommandConfig,
   storeLayer?: Layer.Layer<KeyValueStore.KeyValueStore>,
@@ -508,35 +502,25 @@ const makeExecutionLayer = (
   > =
     languageModelLayer ?? makeProviderLayer(config, cacheLayer)
 
-  const resolverLayer = Layer.provide(Resolver.DefaultWithoutDependencies, [
-    Tokenizer.Default,
-    FormatHandler.Default
-  ])
-
   const effectiveAlignmentExecutorLayer =
     alignmentExecutorLayer ??
-    Layer.provide(AlignmentExecutor.DefaultWithoutDependencies, [resolverLayer])
+    Layer.provide(AlignmentExecutor.DefaultWithoutDependencies, [resolverBaseLayer])
 
   const annotatorLayer = Layer.provide(Annotator.DefaultWithoutDependencies, [
     Tokenizer.Default,
     PromptBuilder.Default,
     FormatHandler.Default,
     effectiveAlignmentExecutorLayer,
-    resolverLayer,
+    resolverBaseLayer,
     providerLayer,
     DocumentIdGenerator.Default
   ])
 
-  const promptValidatorLayer = Layer.provide(
-    PromptValidator.DefaultWithoutDependencies,
-    [resolverLayer]
-  )
-
   const mergedLayer = Layer.mergeAll(
     annotatorLayer,
-    promptValidatorLayer,
+    promptValidatorBaseLayer,
     cacheLayer,
-    Visualizer.Default
+    visualizerBaseLayer
   )
 
   return Layer.provideMerge(
@@ -595,7 +579,31 @@ export const executeExtractCommand = (
   FileSystem.FileSystem | HttpClient.HttpClient
 > =>
   Effect.gen(function* () {
-    const config = resolveExtractCommandConfig(options, options.env)
+    const env = options.env ?? {}
+    const config = yield* resolveExtractCommandConfig(options, env)
+    const providerEnvValue = pickFirstDefined(env.LANGEXTRACT_PROVIDER, env.PROVIDER)
+    const providerSource: "cli" | "env" | "model-id" =
+      options.provider !== undefined
+        ? "cli"
+        : providerEnvValue !== undefined
+          ? "env"
+          : "model-id"
+
+    yield* Effect.logDebug("langextract.cli.config_resolved").pipe(
+      Effect.annotateLogs({
+        provider: config.provider,
+        modelId: config.modelId,
+        output: config.output,
+        providerSource,
+        modelIdSource: resolveConfigSource(options.modelId, env.MODEL_ID),
+        outputSource: resolveConfigSource(options.output, env.OUTPUT_FORMAT),
+        primedCacheEnabledSource: resolveConfigSource(
+          options.primedCacheEnabled,
+          env.PRIMED_CACHE_ENABLED
+        ),
+        configPath: "effect-config"
+      })
+    )
 
     const input = yield* resolveInputText(config)
     const examples = yield* readExamples(config.examplesFile)

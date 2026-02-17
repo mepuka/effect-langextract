@@ -24,7 +24,9 @@ const resolveCacheDir = (
   return env.PRIMED_CACHE_DIR ?? ".cache/langextract/primed"
 }
 
-export const runNodeCliMain = (argv: ReadonlyArray<string>): void => {
+export const runNodeCliMain = (
+  argv: ReadonlyArray<string> = process.argv
+): void => {
   const keyValueStoreLayer: Layer.Layer<KeyValueStore.KeyValueStore> =
     NodeKeyValueStore.layerFileSystem(resolveCacheDir(argv, process.env)).pipe(
       Layer.orDie
@@ -49,4 +51,4 @@ export const runNodeCliMain = (argv: ReadonlyArray<string>): void => {
   NodeRuntime.runMain(program)
 }
 
-runNodeCliMain(process.argv)
+runNodeCliMain()

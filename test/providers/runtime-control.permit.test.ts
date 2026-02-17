@@ -1,11 +1,12 @@
 import * as NativeLanguageModel from "@effect/ai/LanguageModel"
-import { Effect, Fiber, Ref, Stream } from "effect"
+import { Chunk, Effect, Fiber, Ref, Stream } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
   PrimedCache,
   RuntimeControl,
-  makePrimedCacheLayer
+  makePrimedCacheLayer,
+  makeRuntimeControlPermitLayer
 } from "../../src/index.js"
 import { makeProviderLanguageModelService } from "../../src/providers/AiAdapters.js"
 
@@ -50,7 +51,15 @@ const makeConcurrencyTrackedNativeModel = (
               }),
             () => Ref.update(current, (value) => value - 1)
           ),
-    streamText: () => Stream.empty
+    streamText: ({ prompt }) =>
+      Stream.fromIterable([
+        {
+          type: "text-delta",
+          id: "stream-1",
+          delta: String(prompt ?? ""),
+          metadata: {}
+        } as any
+      ])
   }) as NativeLanguageModel.Service
 
 const makeInterruptibleNativeModel = (
@@ -76,18 +85,44 @@ const makeInterruptibleNativeModel = (
       Effect.succeed({
         value: { prompt: String(prompt ?? "") }
       } as any),
-    streamText: () => Stream.empty
+    streamText: ({ prompt }) =>
+      Stream.fromIterable([
+        {
+          type: "text-delta",
+          id: "stream-1",
+          delta: String(prompt ?? ""),
+          metadata: {}
+        } as any
+      ])
   }) as NativeLanguageModel.Service
 
 const makeRuntimeControl = (maxConcurrency: number): Effect.Effect<RuntimeControl> =>
   Effect.gen(function* () {
     const semaphore = yield* Effect.makeSemaphore(maxConcurrency)
     return RuntimeControl.make({
-      acquireProviderPermit: (_provider) =>
-        semaphore.take(1).pipe(Effect.asVoid),
-      releaseProviderPermit: (_provider) =>
-        semaphore.release(1).pipe(Effect.asVoid)
+      withProviderPermit: (_provider, effect) => semaphore.withPermits(1)(effect)
     })
+  })
+
+const makeCacheWithCounters = (): Effect.Effect<{
+  readonly cache: PrimedCache
+  readonly getCalls: Ref.Ref<number>
+  readonly putCalls: Ref.Ref<number>
+}> =>
+  Effect.gen(function* () {
+    const getCalls = yield* Ref.make(0)
+    const putCalls = yield* Ref.make(0)
+    return {
+      cache: PrimedCache.make({
+        get: () =>
+          Ref.update(getCalls, (value) => value + 1).pipe(Effect.as(undefined)),
+        put: () => Ref.update(putCalls, (value) => value + 1).pipe(Effect.asVoid),
+        invalidate: () => Effect.void,
+        clearNamespace: () => Effect.void
+      }),
+      getCalls,
+      putCalls
+    } as const
   })
 
 describe("RuntimeControl permit integration", () => {
@@ -199,10 +234,12 @@ describe("RuntimeControl permit integration", () => {
       const acquired = yield* Ref.make(0)
       const released = yield* Ref.make(0)
       const runtimeControl = RuntimeControl.make({
-        acquireProviderPermit: (_provider) =>
-          Ref.update(acquired, (value) => value + 1),
-        releaseProviderPermit: (_provider) =>
-          Ref.update(released, (value) => value + 1)
+        withProviderPermit: (_provider, effect) =>
+          Effect.acquireUseRelease(
+            Ref.update(acquired, (value) => value + 1),
+            () => effect,
+            () => Ref.update(released, (value) => value + 1)
+          )
       })
 
       const service = makeProviderLanguageModelService({
@@ -231,5 +268,104 @@ describe("RuntimeControl permit integration", () => {
         })
       )
     )
+  )
+
+  it.live("streamText emits native text-delta chunks without cache lookups", () =>
+    Effect.gen(function* () {
+      const { cache, getCalls, putCalls } = yield* makeCacheWithCounters()
+      const generateTextCalls = yield* Ref.make(0)
+      const runtimeControl = RuntimeControl.make({
+        withProviderPermit: (_provider, effect) => effect
+      })
+
+      const nativeModel = {
+        generateText: ({ prompt }: { readonly prompt?: string }) =>
+          Ref.update(generateTextCalls, (value) => value + 1).pipe(
+            Effect.as({ text: String(prompt ?? "") })
+          ),
+        generateObject: ({ prompt }: { readonly prompt?: string }) =>
+          Effect.succeed({
+            value: { prompt: String(prompt ?? "") }
+          }),
+        streamText: () =>
+          Stream.fromIterable([
+            {
+              type: "text-start",
+              id: "stream-1",
+              metadata: {}
+            },
+            {
+              type: "text-delta",
+              id: "stream-1",
+              delta: "hello ",
+              metadata: {}
+            },
+            {
+              type: "text-delta",
+              id: "stream-1",
+              delta: "world",
+              metadata: {}
+            },
+            {
+              type: "text-end",
+              id: "stream-1",
+              metadata: {}
+            }
+          ] as ReadonlyArray<unknown>)
+      } as NativeLanguageModel.Service
+
+      const service = makeProviderLanguageModelService({
+        provider: "test-provider",
+        modelId: "test-model",
+        cache,
+        runtimeControl,
+        nativeModel,
+        defaultProviderConcurrency: 1
+      })
+
+      const chunk = yield* service.streamText("ignored").pipe(Stream.runCollect)
+      const values = Chunk.toReadonlyArray(chunk)
+
+      expect(values).toEqual(["hello ", "world"])
+      expect(yield* Ref.get(generateTextCalls)).toBe(0)
+      expect(yield* Ref.get(getCalls)).toBe(0)
+      expect(yield* Ref.get(putCalls)).toBe(0)
+    })
+  )
+
+  it.live("permit layer enforces shared provider cap under contention", () =>
+    Effect.gen(function* () {
+      const runtimeControl = yield* RuntimeControl
+      const current = yield* Ref.make(0)
+      const max = yield* Ref.make(0)
+
+      const run = (provider: string, duration: "5 millis" | "20 millis") =>
+        runtimeControl.withProviderPermit(
+          provider,
+          Effect.acquireUseRelease(
+            Ref.updateAndGet(current, (value) => value + 1),
+            () =>
+              Effect.gen(function* () {
+                const active = yield* Ref.get(current)
+                yield* Ref.update(max, (value) => Math.max(value, active))
+                yield* Effect.sleep(duration)
+              }),
+            () => Ref.update(current, (value) => value - 1)
+          )
+        )
+
+      yield* Effect.forEach(
+        [
+          ["alpha", "20 millis"],
+          ["alpha", "5 millis"],
+          ["beta", "5 millis"],
+          ["beta", "5 millis"]
+        ] as const,
+        ([provider, duration]) => run(provider, duration),
+        { concurrency: 4, discard: true }
+      )
+
+      expect(yield* Ref.get(max)).toBeLessThanOrEqual(2)
+    }).pipe(Effect.provide(makeRuntimeControlPermitLayer(2)))
   )
 })

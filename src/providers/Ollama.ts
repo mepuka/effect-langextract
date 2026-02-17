@@ -8,7 +8,8 @@ import { FormatType, ScoredOutput } from "../FormatType.js"
 import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { LanguageModel } from "../LanguageModel.js"
 import { PrimedCache, PrimedCacheKey, PrimedCachePolicy } from "../PrimedCache.js"
-import { RuntimeControl } from "../RuntimeControl.js"
+import { FormatModeSchema } from "../ProviderSchema.js"
+import { RuntimeControl, withProviderPermitStream } from "../RuntimeControl.js"
 
 export interface OllamaConfigService {
   readonly modelId: string
@@ -42,6 +43,11 @@ const JsonRecord = Schema.Record({
 
 const OllamaGenerateResponse = Schema.Struct({
   response: Schema.String,
+  done: Schema.optionalWith(Schema.Boolean, { exact: true })
+})
+
+const OllamaGenerateStreamResponse = Schema.Struct({
+  response: Schema.optionalWith(Schema.String, { exact: true }),
   done: Schema.optionalWith(Schema.Boolean, { exact: true })
 })
 
@@ -112,16 +118,6 @@ const toInferenceRuntimeError = (
           }`
   })
 
-const withProviderPermit = <A, E>(
-  runtimeControl: RuntimeControl,
-  effect: Effect.Effect<A, E>
-): Effect.Effect<A, E> =>
-  Effect.acquireUseRelease(
-    runtimeControl.acquireProviderPermit("ollama"),
-    () => effect,
-    () => runtimeControl.releaseProviderPermit("ollama")
-  )
-
 const logProviderEvent = (
   message: string,
   fields: Readonly<Record<string, unknown>>
@@ -150,26 +146,9 @@ const invokeOllama = (
       requestBody
     )
 
-    const response = yield* client.execute(request).pipe(
+    const parsedResponse = yield* client.execute(request).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.mapError((error) => toInferenceRuntimeError("Ollama request failed", error))
-    )
-
-    const rawBody = yield* response.text.pipe(
-      Effect.mapError((error) =>
-        toInferenceRuntimeError("Failed reading Ollama response body", error)
-      )
-    )
-
-    const parsedUnknown = yield* Schema.decodeUnknown(JsonString)(rawBody).pipe(
-      Effect.mapError((error) =>
-        toInferenceRuntimeError("Failed decoding Ollama JSON response", error)
-      )
-    )
-
-    const parsedResponse = yield* Schema.decodeUnknown(OllamaGenerateResponse)(
-      parsedUnknown
-    ).pipe(
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(OllamaGenerateResponse)),
       Effect.mapError((error) =>
         toInferenceRuntimeError("Invalid Ollama generate response", error)
       )
@@ -177,6 +156,54 @@ const invokeOllama = (
 
     return parsedResponse.response
   })
+
+const invokeOllamaStream = (
+  config: OllamaConfigService,
+  client: HttpClient.HttpClient,
+  prompt: string
+): Stream.Stream<string, InferenceRuntimeError> => {
+  const requestBody = {
+    model: config.modelId,
+    prompt,
+    stream: true,
+    ...(config.temperature !== undefined
+      ? { options: { temperature: config.temperature } }
+      : {})
+  }
+
+  const request = HttpClientRequest.bodyUnsafeJson(
+    HttpClientRequest.post(`${stripTrailingSlash(config.baseUrl)}/api/generate`),
+    requestBody
+  )
+
+  return HttpClientResponse.stream(
+    client.execute(request).pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.mapError((error) =>
+        toInferenceRuntimeError("Ollama stream request failed", error)
+      )
+    )
+  ).pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+    Stream.filter((line) => line.trim().length > 0),
+    Stream.mapEffect((line) =>
+      Schema.decodeUnknown(JsonString)(line).pipe(
+        Effect.flatMap((decoded) =>
+          Schema.decodeUnknown(OllamaGenerateStreamResponse)(decoded)
+        ),
+        Effect.mapError((error) =>
+          toInferenceRuntimeError("Invalid Ollama stream chunk", error)
+        )
+      )
+    ),
+    Stream.map((chunk) => chunk.response ?? ""),
+    Stream.filter((delta) => delta.length > 0),
+    Stream.mapError((error) =>
+      toInferenceRuntimeError("Ollama stream decoding failed", error)
+    )
+  )
+}
 
 const runPromptInference = (
   config: OllamaConfigService,
@@ -219,8 +246,8 @@ const runPromptInference = (
       return withCacheMetadata(cached, keyString, "hit")
     }
 
-    const output = yield* withProviderPermit(
-      runtimeControl,
+    const output = yield* runtimeControl.withProviderPermit(
+      "ollama",
       invokeOllama(config, client, prompt)
     ).pipe(
       Effect.tapError(() =>
@@ -267,7 +294,10 @@ const makeOllamaLanguageModelService = (
 ): LanguageModelService => ({
   modelId: config.modelId,
   requiresFenceOutput: config.formatType !== "json",
-  schema: undefined,
+  schema: new FormatModeSchema({
+    formatType: config.formatType,
+    useFences: config.formatType !== "json"
+  }),
   infer: (batchPrompts, inferOptions) =>
     Effect.forEach(
       batchPrompts,
@@ -315,16 +345,35 @@ const makeOllamaLanguageModelService = (
       )
     ),
   streamText: (prompt, inferOptions) =>
-    Stream.fromEffect(
-      runPromptInference(
-        config,
-        cache,
-        runtimeControl,
-        client,
-        prompt,
-        inferOptions
-      ).pipe(
-        Effect.map((values) => values[0]?.output ?? "")
+    Stream.unwrap(
+      logProviderEvent("langextract.provider.stream_start", {
+        provider: "ollama",
+        modelId: config.modelId,
+        stream: true,
+        hasInferOptions: inferOptions !== undefined
+      }).pipe(
+        Effect.as(
+          withProviderPermitStream(
+            runtimeControl,
+            "ollama",
+            invokeOllamaStream(config, client, prompt)
+          ).pipe(
+            Stream.ensuring(
+              logProviderEvent("langextract.provider.stream_complete", {
+                provider: "ollama",
+                modelId: config.modelId,
+                stream: true
+              })
+            ),
+            Stream.tapError(() =>
+              logProviderEvent("langextract.provider.stream_failed", {
+                provider: "ollama",
+                modelId: config.modelId,
+                stream: true
+              })
+            )
+          )
+        )
       )
     )
 })

@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
@@ -7,43 +7,65 @@ import {
   ValidationIssue,
   ValidationReport
 } from "../../src/PromptValidation.js"
-import { ExampleData, Extraction } from "../../src/index.js"
+import { CharInterval, ExampleData, Extraction, Resolver } from "../../src/index.js"
+
+const makeExample = (extractionText: string): ExampleData =>
+  new ExampleData({
+    text: "Alice visited Paris.",
+    extractions: [
+      new Extraction({
+        extractionClass: "snippet",
+        extractionText
+      })
+    ]
+  })
+
+const withResolverStub = (
+  align: (
+    extractions: ReadonlyArray<Extraction>
+  ) => Effect.Effect<ReadonlyArray<Extraction>>
+) =>
+  Effect.provide(
+    Layer.provide(PromptValidator.DefaultWithoutDependencies, [
+      Resolver.testLayer({
+        resolve: () => Effect.succeed([]),
+        align: (extractions) => align(extractions)
+      })
+    ])
+  )
 
 describe("PromptValidator", () => {
-  it.effect("returns no issues for exact aligned examples", () =>
+  it.effect("returns no issues for exact aligned examples (resolver stubbed)", () =>
     Effect.gen(function* () {
       const validator = yield* PromptValidator
       const report = yield* validator.validatePromptAlignment([
-        new ExampleData({
-          text: "Alice visited Paris.",
-          extractions: [
-            new Extraction({
-              extractionClass: "person",
-              extractionText: "Alice"
-            })
-          ]
-        })
+        makeExample("Alice")
       ])
 
       expect(report.issues.length).toBe(0)
-    }).pipe(Effect.provide(PromptValidator.Default))
+    }).pipe(
+      withResolverStub((extractions) =>
+        Effect.succeed(
+          extractions.map(
+            (extraction) =>
+              new Extraction({
+                extractionClass: extraction.extractionClass,
+                extractionText: extraction.extractionText,
+                alignmentStatus: "match_exact",
+                charInterval: new CharInterval({ startPos: 0, endPos: 5 }),
+                tokenInterval: { startIndex: 0, endIndex: 1 }
+              })
+          )
+        )
+      )
+    )
   )
 
-  it.effect("emits non-exact issues for fuzzy matches", () =>
+  it.effect("emits non-exact issues when resolver reports non-exact alignment", () =>
     Effect.gen(function* () {
       const validator = yield* PromptValidator
       const report = yield* validator.validatePromptAlignment(
-        [
-          new ExampleData({
-            text: "Alice visited Paris.",
-            extractions: [
-              new Extraction({
-                extractionClass: "snippet",
-                extractionText: "Alice visited Paris today"
-              })
-            ]
-          })
-        ],
+        [makeExample("Alice visited Paris today")],
         new AlignmentPolicy({
           fuzzyAlignmentThreshold: 0.7,
           acceptMatchLesser: true,
@@ -51,29 +73,49 @@ describe("PromptValidator", () => {
         })
       )
 
-      expect(report.issues.length).toBeGreaterThan(0)
+      expect(report.issues.length).toBe(1)
       expect(report.issues[0]?.issueKind).toBe("non_exact")
-    }).pipe(Effect.provide(PromptValidator.Default))
+      expect(report.issues[0]?.alignmentStatus).toBe("match_lesser")
+    }).pipe(
+      withResolverStub((extractions) =>
+        Effect.succeed(
+          extractions.map(
+            (extraction) =>
+              new Extraction({
+                extractionClass: extraction.extractionClass,
+                extractionText: extraction.extractionText,
+                alignmentStatus: "match_lesser",
+                charInterval: new CharInterval({ startPos: 0, endPos: 12 }),
+                tokenInterval: { startIndex: 0, endIndex: 3 }
+              })
+          )
+        )
+      )
+    )
   )
 
-  it.effect("emits failed issues when extraction text is not alignable", () =>
+  it.effect("emits failed issues when resolver cannot align extraction", () =>
     Effect.gen(function* () {
       const validator = yield* PromptValidator
       const report = yield* validator.validatePromptAlignment([
-        new ExampleData({
-          text: "Alice visited Paris.",
-          extractions: [
-            new Extraction({
-              extractionClass: "snippet",
-              extractionText: "Completely unrelated extraction value"
-            })
-          ]
-        })
+        makeExample("Completely unrelated extraction value")
       ])
 
       expect(report.issues.length).toBe(1)
       expect(report.issues[0]?.issueKind).toBe("failed")
-    }).pipe(Effect.provide(PromptValidator.Default))
+    }).pipe(
+      withResolverStub((extractions) =>
+        Effect.succeed(
+          extractions.map(
+            (extraction) =>
+              new Extraction({
+                extractionClass: extraction.extractionClass,
+                extractionText: extraction.extractionText
+              })
+          )
+        )
+      )
+    )
   )
 
   it.effect("fails strict non-exact handling when configured", () =>
@@ -102,6 +144,25 @@ describe("PromptValidator", () => {
         ),
         Effect.asVoid
       )
+    }).pipe(Effect.provide(PromptValidator.Default))
+  )
+
+  it.effect("integration path remains wired to default resolver layer", () =>
+    Effect.gen(function* () {
+      const validator = yield* PromptValidator
+      const report = yield* validator.validatePromptAlignment([
+        new ExampleData({
+          text: "Alice visited Paris.",
+          extractions: [
+            new Extraction({
+              extractionClass: "person",
+              extractionText: "Alice"
+            })
+          ]
+        })
+      ])
+
+      expect(report.issues.length).toBe(0)
     }).pipe(Effect.provide(PromptValidator.Default))
   )
 })

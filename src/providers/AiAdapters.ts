@@ -5,7 +5,8 @@ import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { InferenceRuntimeError } from "../Errors.js"
 import { ScoredOutput } from "../FormatType.js"
 import { PrimedCache, PrimedCacheKey } from "../PrimedCache.js"
-import { RuntimeControl } from "../RuntimeControl.js"
+import { FormatModeSchema, type ProviderSchema } from "../ProviderSchema.js"
+import { RuntimeControl, withProviderPermitStream } from "../RuntimeControl.js"
 
 const JsonString = Schema.parseJson()
 const JsonRecord = Schema.Record({
@@ -82,22 +83,26 @@ const toInferenceRuntimeError = (
           }`
   })
 
-const withProviderPermit = <A, E>(
-  runtimeControl: RuntimeControl,
-  provider: string,
-  effect: Effect.Effect<A, E>
-): Effect.Effect<A, E> =>
-  Effect.acquireUseRelease(
-    runtimeControl.acquireProviderPermit(provider),
-    () => effect,
-    () => runtimeControl.releaseProviderPermit(provider)
-  )
-
 const logProviderEvent = (
   message: string,
   fields: Readonly<Record<string, unknown>>
 ): Effect.Effect<void> =>
   Effect.logDebug(message).pipe(Effect.annotateLogs(fields))
+
+const toTextDelta = (part: unknown): string | undefined => {
+  if (typeof part !== "object" || part === null) {
+    return undefined
+  }
+  if (
+    "type" in part &&
+    (part as { readonly type?: unknown }).type === "text-delta" &&
+    "delta" in part
+  ) {
+    const delta = (part as { readonly delta?: unknown }).delta
+    return typeof delta === "string" ? delta : undefined
+  }
+  return undefined
+}
 
 const invokeNativeText = (
   nativeModel: NativeLanguageModel.Service,
@@ -105,14 +110,36 @@ const invokeNativeText = (
   prompt: string,
   runtimeControl: RuntimeControl
 ): Effect.Effect<string, InferenceRuntimeError> =>
-  withProviderPermit(
-    runtimeControl,
-    provider,
-    nativeModel.generateText({ prompt })
-  ).pipe(
+  runtimeControl.withProviderPermit(provider, nativeModel.generateText({ prompt })).pipe(
     Effect.map((response) => response.text),
     Effect.mapError((error) =>
       toInferenceRuntimeError(provider, "Provider text generation failed", error)
+    )
+  )
+
+const invokeNativeStreamText = (
+  nativeModel: NativeLanguageModel.Service,
+  provider: string,
+  prompt: string,
+  runtimeControl: RuntimeControl,
+  modelId: string
+): Stream.Stream<string, InferenceRuntimeError> =>
+  withProviderPermitStream(
+    runtimeControl,
+    provider,
+    nativeModel.streamText({ prompt }).pipe(
+      Stream.mapError((error) =>
+        toInferenceRuntimeError(provider, "Provider text stream failed", error)
+      ),
+      Stream.tap(() =>
+        logProviderEvent("langextract.provider.stream_chunk", {
+          provider,
+          modelId
+        })
+      ),
+      Stream.map(toTextDelta),
+      Stream.filter((delta) => delta !== undefined),
+      Stream.map((delta) => delta as string)
     )
   )
 
@@ -204,6 +231,7 @@ export const makeProviderLanguageModelService = (options: {
   readonly provider: string
   readonly modelId: string
   readonly requiresFenceOutput?: boolean
+  readonly schema?: ProviderSchema | undefined
   readonly cache: PrimedCache
   readonly runtimeControl: RuntimeControl
   readonly nativeModel: NativeLanguageModel.Service
@@ -211,7 +239,12 @@ export const makeProviderLanguageModelService = (options: {
 }): LanguageModelService => ({
   modelId: options.modelId,
   requiresFenceOutput: options.requiresFenceOutput ?? false,
-  schema: undefined,
+  schema:
+    options.schema ??
+    new FormatModeSchema({
+      formatType: options.requiresFenceOutput ? "yaml" : "json",
+      useFences: options.requiresFenceOutput ?? false
+    }),
   infer: (batchPrompts, inferOptions) =>
     Effect.forEach(
       batchPrompts,
@@ -243,8 +276,7 @@ export const makeProviderLanguageModelService = (options: {
       inferOptions
     ).pipe(Effect.map((values) => values[0] ?? new ScoredOutput({}))),
   generateObject: (prompt, inferOptions) =>
-    withProviderPermit(
-      options.runtimeControl,
+    options.runtimeControl.withProviderPermit(
       options.provider,
       options.nativeModel.generateObject({
         prompt,
@@ -290,15 +322,37 @@ export const makeProviderLanguageModelService = (options: {
       )
     ),
   streamText: (prompt, inferOptions) =>
-    Stream.fromEffect(
-      runPromptInference(
-        options.nativeModel,
-        options.provider,
-        options.modelId,
-        options.cache,
-        options.runtimeControl,
-        prompt,
-        inferOptions
-      ).pipe(Effect.map((values) => values[0]?.output ?? ""))
+    Stream.unwrap(
+      logProviderEvent("langextract.provider.stream_start", {
+        provider: options.provider,
+        modelId: options.modelId,
+        stream: true,
+        hasInferOptions: inferOptions !== undefined
+      }).pipe(
+        Effect.as(
+          invokeNativeStreamText(
+            options.nativeModel,
+            options.provider,
+            prompt,
+            options.runtimeControl,
+            options.modelId
+          ).pipe(
+            Stream.ensuring(
+              logProviderEvent("langextract.provider.stream_complete", {
+                provider: options.provider,
+                modelId: options.modelId,
+                stream: true
+              })
+            ),
+            Stream.tapError(() =>
+              logProviderEvent("langextract.provider.stream_failed", {
+                provider: options.provider,
+                modelId: options.modelId,
+                stream: true
+              })
+            )
+          )
+        )
+      )
     )
 })

@@ -21,7 +21,9 @@ export const ExtractionConfig = Config.all({
   useFences: Config.boolean("USE_FENCES").pipe(Config.option),
   useSchemaConstraints: Config.boolean("USE_SCHEMA_CONSTRAINTS").pipe(Config.withDefault(true)),
   primedCacheEnabled: Config.boolean("PRIMED_CACHE_ENABLED").pipe(Config.withDefault(true)),
-  primedCacheDir: Config.string("PRIMED_CACHE_DIR").pipe(Config.withDefault(".cache/langextract")),
+  primedCacheDir: Config.string("PRIMED_CACHE_DIR").pipe(
+    Config.withDefault(".cache/langextract/primed")
+  ),
   primedCacheNamespace: Config.string("PRIMED_CACHE_NAMESPACE").pipe(Config.withDefault("langextract")),
   primedCacheTtlSeconds: Config.integer("PRIMED_CACHE_TTL_SECONDS").pipe(Config.withDefault(86400)),
   primedCacheDeterministicOnly: Config.boolean("PRIMED_CACHE_DETERMINISTIC_ONLY").pipe(

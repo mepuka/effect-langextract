@@ -10,6 +10,10 @@ The core is runtime-neutral and provider-native:
 - OpenAI / Gemini / Anthropic use native `@effect/ai-*` language-model layers.
 - Ollama uses a platform-neutral `HttpClient` adapter.
 - CLI is typed with `@effect/cli` subcommands: `extract` and `visualize`.
+- Extract runtime config is loaded from one `ExtractionConfig` path via `Effect.Config`.
+- Runtime permits use provider-partitioned fairness via `RuntimeControl.withProviderPermit(...)`.
+- `streamText` uses provider-native streaming and intentionally bypasses primed-cache reads/writes.
+- Visualization parity work is tracked separately; non-visualization hardening is complete in this batch.
 
 ## Run
 
@@ -62,6 +66,15 @@ Key env vars include:
 - Model: `MODEL_ID`
 - Cache: `PRIMED_CACHE_*`
 - Provider credentials/base URLs: `OPENAI_*`, `GEMINI_*`, `ANTHROPIC_*`, `OLLAMA_BASE_URL`
+
+The `extract` command resolves runtime fields by loading `ExtractionConfig` once from a map-backed config provider, with CLI values overwriting env values before decode.
+
+## Runtime Control + Streaming
+
+- Runtime control contract: `withProviderPermit(provider, effect)`.
+- Permit implementation: `PartitionedSemaphore`-backed layer (`makeRuntimeControlPermitLayer`).
+- Provider adapters (`src/providers/AiAdapters.ts`, `src/providers/Ollama.ts`) run infer/object/stream paths under permit wrappers.
+- Stream paths do not use primed cache and emit incremental text deltas only.
 
 ## Testing Convention
 

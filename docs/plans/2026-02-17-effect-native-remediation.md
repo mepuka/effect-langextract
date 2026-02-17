@@ -16,6 +16,14 @@ Completed:
 2. P2-1 through P2-5.
 3. P3-1 through P3-4.
 
+Audit hardening delta (non-visualization) completed in follow-up:
+1. Unified extract config resolution through `ExtractionConfig` (`Effect.Config`) with `CLI > env > defaults`.
+2. Runtime control contract aligned to `withProviderPermit(provider, effect)` with partitioned fairness semantics.
+3. Provider `streamText` paths switched to native incremental streaming with no primed-cache path.
+4. Prompt validator isolation tests and service contract override-determinism checks added.
+5. Provider schema metadata upgraded from placeholders where format contracts are known.
+6. Runtime boundary checks confirmed (`@effect/platform-bun` only in runtime modules; no core globals).
+
 Artifact paths:
 1. Performance benchmark reports: `.cache/perf/annotator-throughput.latest.json` and `.cache/perf/annotator-throughput-<timestamp>.json`.
 2. Worker alignment runtime wiring: `src/runtime/BunAlignmentWorker.ts` and `src/runtime/workers/*`.

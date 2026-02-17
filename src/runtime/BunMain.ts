@@ -65,7 +65,9 @@ const resolveWorkerPoolSize = (
   return clampWorkerPoolSize(batchConcurrency)
 }
 
-export const runCliMain = (argv: ReadonlyArray<string>): void => {
+export const runCliMain = (
+  argv: ReadonlyArray<string> = process.argv
+): void => {
   const keyValueStoreLayer = makeBunKeyValueStoreLayer(
     resolveCacheDir(argv, process.env)
   )

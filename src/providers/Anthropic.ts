@@ -7,6 +7,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
 import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
+import { FormatModeSchema } from "../ProviderSchema.js"
 import { RuntimeControl } from "../RuntimeControl.js"
 import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
@@ -108,6 +109,10 @@ export const AnthropicLanguageModelLive: Layer.Layer<
           provider: "anthropic",
           modelId: config.modelId,
           requiresFenceOutput: config.formatType !== "json",
+          schema: new FormatModeSchema({
+            formatType: config.formatType,
+            useFences: config.formatType !== "json"
+          }),
           cache,
           runtimeControl,
           nativeModel,

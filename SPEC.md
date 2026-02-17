@@ -4,6 +4,19 @@ A complete specification for porting [google/langextract](https://github.com/goo
 
 ---
 
+## 0. Current Implementation Status (2026-02-17)
+
+The repository currently enforces these Effect-native decisions:
+
+1. Core remains runtime-neutral; runtime-specific composition lives under `src/runtime/*`.
+2. Extract command config is resolved through a single `ExtractionConfig` decode path (`Effect.Config`) using `CLI > env > defaults` precedence.
+3. Runtime concurrency control uses a provider-aware permit wrapper: `RuntimeControl.withProviderPermit(provider, effect)`, backed by a partitioned semaphore layer.
+4. Provider stream paths are native streaming paths (`@effect/ai` stream API for cloud providers, HTTP streaming for Ollama) and do not use primed-cache read/write paths.
+5. Service tests use canonical `Effect.Service` APIs (`Test`, `testLayer(...)`, and `DefaultWithoutDependencies` overrides where applicable).
+6. Visualization parity work is intentionally tracked separately from this hardening pass.
+
+---
+
 ## 1. Module Map
 
 Every Python module maps to a TypeScript module under `src/`. Backward-compatibility shims (e.g., `langextract/data.py`, `langextract/tokenizer.py`, `langextract/schema.py`, `langextract/inference.py`, `langextract/registry.py`, `langextract/exceptions.py`) are omitted -- the Effect port uses a clean module layout without legacy re-exports.
@@ -35,7 +48,7 @@ langextract/extraction.py          -> src/Extract.ts            (Top-level extra
 langextract/prompt_validation.py   -> src/PromptValidation.ts   (Validation of few-shot examples)
 langextract/io.py                  -> src/IO.ts                 (Dataset loading, JSONL I/O, URL download)
 langextract/visualization.py       -> src/Visualization.ts      (HTML visualization generation)
-langextract/rate_limits.py         -> src/RuntimeControl.ts     (Rate limiting, provider throughput controls)
+langextract/rate_limits.py         -> src/RuntimeControl.ts     (Provider-partitioned permit control via withProviderPermit)
 (new)                              -> src/AlignmentExecutor.ts  (Alignment execution service abstraction for local/worker-backed alignment)
 langextract/progress.py            -> (eliminated -- replaced by Effect logging)
 langextract/factory.py             -> (eliminated -- replaced by Effect Layer composition + Config)
