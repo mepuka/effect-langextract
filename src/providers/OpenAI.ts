@@ -7,6 +7,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
 import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
+import { RuntimeControl } from "../RuntimeControl.js"
 import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface OpenAIConfigService {
@@ -96,13 +97,14 @@ export const OpenAINativeLanguageModelLive: Layer.Layer<
 export const OpenAILanguageModelLive: Layer.Layer<
   LanguageModel,
   never,
-  OpenAIConfig | PrimedCache | HttpClient.HttpClient
+  OpenAIConfig | PrimedCache | RuntimeControl | HttpClient.HttpClient
 > = Layer.provide(
   Layer.effect(
     LanguageModel,
     Effect.gen(function* () {
       const config = yield* OpenAIConfig
       const cache = yield* PrimedCache
+      const runtimeControl = yield* RuntimeControl
       const nativeModel = yield* NativeLanguageModel.LanguageModel
 
       return LanguageModel.make(
@@ -111,6 +113,7 @@ export const OpenAILanguageModelLive: Layer.Layer<
           modelId: config.modelId,
           requiresFenceOutput: config.formatType !== "json",
           cache,
+          runtimeControl,
           nativeModel,
           defaultProviderConcurrency: config.providerConcurrency
         })

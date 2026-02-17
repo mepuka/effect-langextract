@@ -2,7 +2,10 @@ import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
+  Annotator,
   AnthropicConfig,
+  DocumentIdGenerator,
+  FormatHandler,
   GeminiConfig,
   LanguageModel,
   OllamaConfig,
@@ -16,6 +19,7 @@ import {
   TokenInterval,
   Tokenizer,
   Visualizer,
+  RuntimeControl,
   OpenAIConfig
 } from "../../src/index.js"
 
@@ -69,11 +73,23 @@ describe("Service contracts", () => {
     expect(typeof Tokenizer.testLayer).toBe("function")
     expect(typeof LanguageModel.Test).toBe("object")
     expect(typeof LanguageModel.testLayer).toBe("function")
+    expect(typeof DocumentIdGenerator.Test).toBe("object")
+    expect(typeof DocumentIdGenerator.testLayer).toBe("function")
+    expect(typeof FormatHandler.Test).toBe("object")
+    expect(typeof FormatHandler.testLayer).toBe("function")
     expect(typeof PrimedCache.testLayer).toBe("function")
     expect(typeof PromptBuilder.Test).toBe("object")
+    expect(typeof PromptBuilder.testLayer).toBe("function")
     expect(typeof PromptValidator.Test).toBe("object")
+    expect(typeof PromptValidator.testLayer).toBe("function")
     expect(typeof Resolver.Test).toBe("object")
+    expect(typeof Resolver.testLayer).toBe("function")
+    expect(typeof Annotator.Test).toBe("object")
+    expect(typeof Annotator.testLayer).toBe("function")
     expect(typeof Visualizer.Test).toBe("object")
+    expect(typeof Visualizer.testLayer).toBe("function")
+    expect(typeof RuntimeControl.Test).toBe("object")
+    expect(typeof RuntimeControl.testLayer).toBe("function")
     expect(typeof OpenAIConfig.Test).toBe("object")
     expect(typeof OpenAIConfig.testLayer).toBe("function")
     expect(typeof GeminiConfig.Test).toBe("object")

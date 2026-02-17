@@ -1,7 +1,14 @@
 import { Effect, Layer, Schema, Stream } from "effect"
 
 import { TextChunk, chunkDocuments, makeBatches } from "./Chunking.js"
-import { AnnotatedDocument, Document, ExampleData, Extraction } from "./Data.js"
+import {
+  AnnotatedDocument,
+  Document,
+  DocumentIdGenerator,
+  ExampleData,
+  Extraction,
+  makeDocumentEffect
+} from "./Data.js"
 import { LangExtractError } from "./Errors.js"
 import { FormatHandler } from "./FormatHandler.js"
 import { LanguageModel } from "./LanguageModel.js"
@@ -56,6 +63,7 @@ type AnnotatorDependencies = {
   readonly promptBuilder: PromptBuilder
   readonly languageModel: LanguageModel
   readonly resolver: Resolver
+  readonly documentIdGenerator: DocumentIdGenerator
 }
 
 const JsonString = Schema.parseJson()
@@ -182,61 +190,63 @@ const annotateDocumentsPass = (
 
     const perDocument: Array<Array<Extraction>> = documents.map(() => [])
 
-    yield* Effect.forEach(
-      batches,
-      (batch) => {
-        const prompts = batch.map((chunk) =>
-          buildPromptForChunk(chunk, options, dependencies)
-        )
-        return dependencies.languageModel
-          .infer(prompts, {
-            cachePolicy: options.cachePolicy,
-            providerConcurrency: options.providerConcurrency,
-            passNumber
-          })
-          .pipe(
-            Effect.mapError(toLangExtractError),
-            Effect.flatMap((outputs) =>
-              Effect.forEach(outputs, (candidateOutputs, outputIndex) => {
-                const chunk = batch[outputIndex]
-                if (chunk === undefined) {
-                  return Effect.void
-                }
-
-                const firstOutput = candidateOutputs[0]?.output ?? "[]"
-                return dependencies.resolver
-                  .resolve(firstOutput, {
-                    suppressParseErrors: true
-                  })
-                  .pipe(
-                    Effect.mapError(toLangExtractError),
-                    Effect.flatMap((resolved) =>
-                      dependencies.resolver.align(
-                        resolved,
-                        chunk.chunkText,
-                        chunk.tokenInterval.startIndex,
-                        chunk.charInterval.startPos ?? 0,
-                        undefined
-                      )
-                    ),
-                    Effect.mapError(toLangExtractError),
-                    Effect.tap((aligned) =>
-                      Effect.sync(() => {
-                        const docIndex = chunk.documentIndex
-                        if (perDocument[docIndex] === undefined) {
-                          perDocument[docIndex] = []
-                        }
-                        perDocument[docIndex]?.push(...aligned)
-                      })
-                    ),
-                    Effect.asVoid
-                  )
-              })
-            ),
-            Effect.asVoid
+    yield* Stream.fromIterable(batches).pipe(
+      Stream.mapEffect(
+        (batch) => {
+          const prompts = batch.map((chunk) =>
+            buildPromptForChunk(chunk, options, dependencies)
           )
-      },
-      { concurrency: options.batchConcurrency }
+          return dependencies.languageModel
+            .infer(prompts, {
+              cachePolicy: options.cachePolicy,
+              providerConcurrency: options.providerConcurrency,
+              passNumber
+            })
+            .pipe(
+              Effect.mapError(toLangExtractError),
+              Effect.flatMap((outputs) =>
+                Effect.forEach(outputs, (candidateOutputs, outputIndex) => {
+                  const chunk = batch[outputIndex]
+                  if (chunk === undefined) {
+                    return Effect.void
+                  }
+
+                  const firstOutput = candidateOutputs[0]?.output ?? "[]"
+                  return dependencies.resolver
+                    .resolve(firstOutput, {
+                      suppressParseErrors: true
+                    })
+                    .pipe(
+                      Effect.mapError(toLangExtractError),
+                      Effect.flatMap((resolved) =>
+                        dependencies.resolver.align(
+                          resolved,
+                          chunk.chunkText,
+                          chunk.tokenInterval.startIndex,
+                          chunk.charInterval.startPos ?? 0,
+                          undefined
+                        )
+                      ),
+                      Effect.mapError(toLangExtractError),
+                      Effect.tap((aligned) =>
+                        Effect.sync(() => {
+                          const docIndex = chunk.documentIndex
+                          if (perDocument[docIndex] === undefined) {
+                            perDocument[docIndex] = []
+                          }
+                          perDocument[docIndex]?.push(...aligned)
+                        })
+                      ),
+                      Effect.asVoid
+                    )
+                })
+              ),
+              Effect.asVoid
+            )
+        },
+        { concurrency: options.batchConcurrency }
+      ),
+      Stream.runDrain
     )
 
     return documents.map((document, index) =>
@@ -300,20 +310,19 @@ const annotateTextImpl = (
   options: AnnotateOptions,
   dependencies: AnnotatorDependencies
 ): Effect.Effect<AnnotatedDocument, LangExtractError> =>
-  annotateDocumentsMerged(
-    [
-      new Document({
-        text,
-        ...(options.additionalContext !== undefined
-          ? { additionalContext: options.additionalContext }
-          : {})
-      })
-    ],
-    options,
-    dependencies
-  ).pipe(
-    Effect.map((documents) => documents[0] ?? new AnnotatedDocument({ text }))
-  )
+  Effect.gen(function* () {
+    const document = yield* makeDocumentEffect({
+      text,
+      ...(options.additionalContext !== undefined
+        ? { additionalContext: options.additionalContext }
+        : {})
+    }).pipe(
+      Effect.provideService(DocumentIdGenerator, dependencies.documentIdGenerator)
+    )
+
+    const annotated = yield* annotateDocumentsMerged([document], options, dependencies)
+    return annotated[0] ?? new AnnotatedDocument({ text })
+  })
 
 export class Annotator extends Effect.Service<Annotator>()(
   "@effect-langextract/Annotator",
@@ -323,18 +332,21 @@ export class Annotator extends Effect.Service<Annotator>()(
       PromptBuilder.Default,
       LanguageModel.Default,
       FormatHandler.Default,
-      Resolver.Default
+      Resolver.Default,
+      DocumentIdGenerator.Default
     ],
     effect: Effect.gen(function* () {
       const tokenizer = yield* Tokenizer
       const promptBuilder = yield* PromptBuilder
       const languageModel = yield* LanguageModel
       const resolver = yield* Resolver
+      const documentIdGenerator = yield* DocumentIdGenerator
       const dependencies: AnnotatorDependencies = {
         tokenizer,
         promptBuilder,
         languageModel,
-        resolver
+        resolver,
+        documentIdGenerator
       }
       return {
         annotateDocuments: (documents, options) =>
@@ -346,6 +358,22 @@ export class Annotator extends Effect.Service<Annotator>()(
   }
 ) {
   static readonly Test: Layer.Layer<Annotator> = Annotator.Default
+
+  static testLayer = (
+    service?: AnnotatorService
+  ): Layer.Layer<
+    Annotator,
+    never,
+    | Tokenizer
+    | PromptBuilder
+    | LanguageModel
+    | FormatHandler
+    | Resolver
+    | DocumentIdGenerator
+  > =>
+    service !== undefined
+      ? Layer.succeed(Annotator, Annotator.make(service))
+      : Annotator.DefaultWithoutDependencies
 }
 
 export const AnnotatorLive: Layer.Layer<Annotator> = Annotator.Default

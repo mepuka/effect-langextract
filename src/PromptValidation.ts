@@ -2,6 +2,7 @@ import { Effect, Layer, Schema } from "effect"
 
 import { ExampleData } from "./Data.js"
 import { PromptAlignmentError } from "./Errors.js"
+import { Resolver } from "./Resolver.js"
 
 export const PromptValidationLevel = Schema.Literal("off", "warning", "error")
 export type PromptValidationLevel = typeof PromptValidationLevel.Type
@@ -55,13 +56,76 @@ export interface PromptValidatorService {
 }
 
 const validatePromptAlignmentImpl = (
-  examples: ReadonlyArray<ExampleData>
+  examples: ReadonlyArray<ExampleData>,
+  policy: AlignmentPolicy | undefined,
+  resolver: Resolver
 ): Effect.Effect<ValidationReport> =>
-  Effect.succeed(
-    new ValidationReport({
-      issues: examples.length > 0 ? [] : []
-    })
-  )
+  Effect.gen(function* () {
+    const issues: Array<ValidationIssue> = []
+
+    for (const [exampleIndex, example] of examples.entries()) {
+      if (example.extractions.length === 0) {
+        continue
+      }
+
+      const aligned = yield* resolver
+        .align(example.extractions, example.text, 0, 0, {
+          enableFuzzyAlignment: policy?.enableFuzzyAlignment ?? true,
+          fuzzyAlignmentThreshold: policy?.fuzzyAlignmentThreshold ?? 0.75,
+          acceptMatchLesser: policy?.acceptMatchLesser ?? true
+        })
+
+      for (const extraction of example.extractions) {
+        const match = aligned.find(
+          (candidate) =>
+            candidate.extractionClass === extraction.extractionClass &&
+            candidate.extractionText === extraction.extractionText
+        )
+
+        const status = match?.alignmentStatus
+        const isResolved =
+          status !== undefined &&
+          match?.charInterval?.startPos !== undefined &&
+          match?.charInterval?.endPos !== undefined &&
+          match?.tokenInterval?.startIndex !== undefined &&
+          match?.tokenInterval?.endIndex !== undefined
+
+        if (!isResolved) {
+          issues.push(
+            new ValidationIssue({
+              exampleIndex,
+              extractionClass: extraction.extractionClass,
+              extractionTextPreview: extraction.extractionText.slice(0, 80),
+              issueKind: "failed"
+            })
+          )
+          continue
+        }
+
+        if (status !== "match_exact") {
+          issues.push(
+            new ValidationIssue({
+              exampleIndex,
+              extractionClass: extraction.extractionClass,
+              extractionTextPreview: extraction.extractionText.slice(0, 80),
+              alignmentStatus: status,
+              issueKind: "non_exact",
+              charInterval: [
+                match.charInterval?.startPos ?? 0,
+                match.charInterval?.endPos ?? 0
+              ],
+              tokenInterval: [
+                match.tokenInterval?.startIndex ?? 0,
+                match.tokenInterval?.endIndex ?? 0
+              ]
+            })
+          )
+        }
+      }
+    }
+
+    return new ValidationReport({ issues })
+  })
 
 const handleAlignmentReportImpl = (
   report: ValidationReport,
@@ -90,13 +154,25 @@ const handleAlignmentReportImpl = (
 export class PromptValidator extends Effect.Service<PromptValidator>()(
   "@effect-langextract/PromptValidator",
   {
-    sync: () => ({
-      validatePromptAlignment: validatePromptAlignmentImpl,
-      handleAlignmentReport: handleAlignmentReportImpl
-    } satisfies PromptValidatorService)
+    dependencies: [Resolver.Default],
+    effect: Effect.gen(function* () {
+      const resolver = yield* Resolver
+      return {
+        validatePromptAlignment: (examples, policy) =>
+          validatePromptAlignmentImpl(examples, policy, resolver),
+        handleAlignmentReport: handleAlignmentReportImpl
+      } satisfies PromptValidatorService
+    })
   }
 ) {
   static readonly Test: Layer.Layer<PromptValidator> = PromptValidator.Default
+
+  static testLayer = (
+    service?: PromptValidatorService
+  ): Layer.Layer<PromptValidator, never, Resolver> =>
+    service !== undefined
+      ? Layer.succeed(PromptValidator, PromptValidator.make(service))
+      : PromptValidator.DefaultWithoutDependencies
 }
 
 export const PromptValidatorLive: Layer.Layer<PromptValidator> = PromptValidator.Default

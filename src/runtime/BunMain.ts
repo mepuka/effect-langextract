@@ -1,4 +1,5 @@
 import * as BunContext from "@effect/platform-bun/BunContext"
+import * as BunWorkerRunner from "@effect/platform-bun/BunWorkerRunner"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
 import { Effect, Layer } from "effect"
 
@@ -23,11 +24,16 @@ export const runCliMain = (argv: ReadonlyArray<string>): void => {
   const keyValueStoreLayer = makeBunKeyValueStoreLayer(
     resolveCacheDir(argv, process.env)
   )
-  const runtimeLayer = Layer.mergeAll(
+  const enableWorkers =
+    (process.env.LANGEXTRACT_ENABLE_BUN_WORKERS ?? "").toLowerCase() === "true"
+  const runtimeBaseLayer = Layer.mergeAll(
     BunContext.layer,
     FetchHttpClient.layer,
     keyValueStoreLayer
   )
+  const runtimeLayer = enableWorkers
+    ? Layer.merge(runtimeBaseLayer, BunWorkerRunner.layer)
+    : runtimeBaseLayer
 
   const program = runCli(argv, {
     env: process.env,

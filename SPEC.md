@@ -1227,173 +1227,51 @@ Cache policy rules:
 
 ## 7. CLI Specification
 
-The CLI uses `@effect/cli` with a top-level `extract` command and sub-commands.
+The CLI is implemented with typed `@effect/cli` commands in `src/Cli.ts`.
 
 ### 7.1 Command Structure
 
 ```
-effect-langextract extract [options] <input>
-effect-langextract visualize [options] <jsonl-path>
+effect-langextract extract [options]
+effect-langextract visualize --input <annotated-document.json> [options]
 ```
 
 ### 7.2 Extract Command
 
-```typescript
-// src/Cli.ts
-import { Args, Command, Options } from "@effect/cli"
+`extract` accepts one input source (`--text`, `--file`, or `--url`) and supports:
 
-const input = Args.text({ name: "input" }).pipe(
-  Args.withDescription("Text to extract from, or URL, or file path")
-)
+- Provider selection: `gemini | openai | anthropic | ollama`
+- Model/runtime knobs: `--model-id`, `--temperature`, `--provider-concurrency`
+- Pipeline knobs: `--max-char-buffer`, `--batch-length`, `--batch-concurrency`, `--extraction-passes`, `--context-window-chars`, `--max-batch-input-tokens`
+- Output knobs: `--output json|jsonl|html`, optional `--output-path`
+- Primed-cache knobs: namespace, ttl, deterministic-only, and clear-on-start
 
-const extractOptions = {
-  promptDescription: Options.text("prompt").pipe(
-    Options.withAlias("p"),
-    Options.withDescription("Instructions for what to extract")
-  ),
-  examplesFile: Options.file("examples").pipe(
-    Options.withAlias("e"),
-    Options.withDescription("Path to YAML/JSON file with few-shot examples")
-  ),
-  modelId: Options.text("model").pipe(
-    Options.withAlias("m"),
-    Options.withDefault("gemini-2.5-flash"),
-    Options.withDescription("Model ID (e.g., gemini-2.5-flash, gpt-4o, gemma2:2b)")
-  ),
-  provider: Options.text("provider").pipe(
-    Options.optional,
-    Options.withDescription("Explicit provider: gemini, openai, ollama")
-  ),
-  maxCharBuffer: Options.integer("max-chars").pipe(
-    Options.withDefault(1000),
-    Options.withDescription("Max characters per chunk for inference")
-  ),
-  batchLength: Options.integer("batch-length").pipe(
-    Options.withDefault(10),
-    Options.withDescription("Number of chunks per batch")
-  ),
-  batchConcurrency: Options.integer("batch-concurrency").pipe(
-    Options.withDefault(1),
-    Options.withDescription("How many batches can run in parallel")
-  ),
-  providerConcurrency: Options.integer("provider-concurrency").pipe(
-    Options.withDefault(8),
-    Options.withDescription("Max parallel prompts per provider call")
-  ),
-  maxBatchInputTokens: Options.integer("max-batch-input-tokens").pipe(
-    Options.optional,
-    Options.withDescription("Optional token cap per batch including prompt overhead")
-  ),
-  extractionPasses: Options.integer("passes").pipe(
-    Options.withDefault(1),
-    Options.withDescription("Number of extraction passes (higher = better recall, more cost)")
-  ),
-  contextWindow: Options.integer("context-window").pipe(
-    Options.optional,
-    Options.withDescription("Characters from previous chunk for coreference")
-  ),
-  formatType: Options.choice("format", ["json", "yaml"]).pipe(
-    Options.withDefault("json" as const),
-    Options.withDescription("Output format")
-  ),
-  output: Options.directory("output").pipe(
-    Options.withAlias("o"),
-    Options.withDefault("output"),
-    Options.withDescription("Output directory for JSONL results")
-  ),
-  outputName: Options.text("output-name").pipe(
-    Options.withDefault("data.jsonl"),
-    Options.withDescription("Output file name")
-  ),
-  temperature: Options.float("temperature").pipe(
-    Options.optional,
-    Options.withDescription("Sampling temperature")
-  ),
-  primedCacheEnabled: Options.boolean("cache").pipe(
-    Options.withDefault(true),
-    Options.withDescription("Enable primed cache reads/writes")
-  ),
-  primedCacheDir: Options.directory("cache-dir").pipe(
-    Options.withDefault(".cache/langextract"),
-    Options.withDescription("Filesystem directory for persisted primed cache")
-  ),
-  primedCacheNamespace: Options.text("cache-namespace").pipe(
-    Options.withDefault("langextract"),
-    Options.withDescription("Cache namespace to isolate entries by run/workload")
-  ),
-  primedCacheTtlSeconds: Options.integer("cache-ttl-seconds").pipe(
-    Options.withDefault(86400),
-    Options.withDescription("TTL for primed cache entries")
-  ),
-  primedCacheDeterministicOnly: Options.boolean("cache-deterministic-only").pipe(
-    Options.withDefault(true),
-    Options.withDescription("Only write cache entries for deterministic model calls")
-  ),
-  clearPrimedCacheOnStart: Options.boolean("clear-cache").pipe(
-    Options.withDefault(false),
-    Options.withDescription("Clear provider cache namespace before running extraction")
-  ),
-  debug: Options.boolean("debug").pipe(
-    Options.withDefault(false),
-    Options.withDescription("Enable debug logging")
-  ),
-  noProgress: Options.boolean("no-progress").pipe(
-    Options.withDefault(false),
-    Options.withDescription("Disable progress output")
-  )
-}
+Config precedence is strictly:
 
-const extractCommand = Command.make("extract", extractOptions, (args) =>
-  Effect.gen(function* () {
-    // 1. Load examples from file
-    // 2. Determine provider from model ID
-    // 3. Build cache policy from flags + env config
-    // 4. Build Layer stack (PrimedCache + LanguageModel + Tokenizer + FormatHandler + Resolver + PromptBuilder + Annotator)
-    // 5. Validate concurrency controls (batchConcurrency x providerConcurrency)
-    // 6. Optionally clear cache namespace when --clear-cache=true
-    // 7. Run extraction pipeline
-    // 8. Save results to JSONL
-  })
-)
-```
+`CLI > env > defaults`
 
 ### 7.3 Visualize Command
 
-```typescript
-const visualizeOptions = {
-  input: Args.file({ name: "jsonl-path" }),
-  animationSpeed: Options.float("speed").pipe(
-    Options.withDefault(1.0),
-    Options.withDescription("Animation speed in seconds")
-  ),
-  output: Options.file("output").pipe(
-    Options.withAlias("o"),
-    Options.optional,
-    Options.withDescription("Output HTML file path")
-  )
-}
+`visualize` is intentionally clean-break and accepts **annotated JSON** only:
 
-const visualizeCommand = Command.make("visualize", visualizeOptions, (args) =>
-  Effect.gen(function* () {
-    // 1. Load JSONL
-    // 2. Generate HTML
-    // 3. Write to stdout or file
-  })
-)
-```
+- Required: `--input <annotated-document.json>`
+- Optional: `--output-path <html-file>`
+- Optional: `--animation-speed <float>`
+- Optional: `--show-legend true|false`
+
+Implementation path:
+
+1. Read JSON file via `FileSystem`
+2. Decode `AnnotatedDocument` via schema JSON codec
+3. Render HTML via `Visualizer`
+4. Write to file or stdout
 
 ### 7.4 Root Command
 
-```typescript
-const command = Command.make("effect-langextract").pipe(
-  Command.withSubcommands([extractCommand, visualizeCommand])
-)
+Root command exposes both subcommands and no legacy compatibility shims:
 
-export const cli = Command.run(command, {
-  name: "effect-langextract",
-  version: "0.1.0"
-})
-```
+- `extract`
+- `visualize`
 
 ---
 
@@ -1403,7 +1281,6 @@ export const cli = Command.run(command, {
 
 ```typescript
 // src/Annotator.ts
-import { createHash } from "node:crypto"
 import { Effect } from "effect"
 
 type BatchBuildOptions = {
@@ -1412,8 +1289,14 @@ type BatchBuildOptions = {
   readonly estimateTokens: (chunk: TextChunk) => number
 }
 
-const hashText = (text: string): string =>
-  createHash("sha256").update(text).digest("hex")
+const hashText = (text: string): string => {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0")
+}
 
 const estimatePromptTokens = (
   promptBuilder: PromptBuilderService,
@@ -1751,7 +1634,7 @@ const result = Effect.runPromise(
 
 A bottom-up implementation order that ensures each phase can be tested independently.
 
-### Phase 1: Foundation (Data Models + Errors)
+### Phase 1: Foundation (Data Models + Errors) — Status: Complete
 
 **Files**: `src/Errors.ts`, `src/FormatType.ts`, `src/Data.ts`, `src/DataLib.ts`
 
@@ -1763,7 +1646,7 @@ A bottom-up implementation order that ensures each phase can be tested independe
 **Dependencies**: None
 **Tests**: Schema roundtrip tests, construction tests, serialization
 
-### Phase 2: Tokenizer + Alignment Core
+### Phase 2: Tokenizer + Alignment Core — Status: Complete
 
 **Files**: `src/Tokenizer.ts`
 
@@ -1778,7 +1661,7 @@ A bottom-up implementation order that ensures each phase can be tested independe
 **Dependencies**: Phase 1 (CharInterval, errors)
 **Tests**: Port tokenizer_test.py -- verify identical tokenization behavior
 
-### Phase 3: Format Handler
+### Phase 3: Format Handler — Status: Complete
 
 **Files**: `src/FormatHandler.ts`
 
@@ -1792,7 +1675,7 @@ A bottom-up implementation order that ensures each phase can be tested independe
 **Dependencies**: Phase 1 (data models, FormatType, errors)
 **Tests**: Port format_handler_test.py
 
-### Phase 4: Resolver + Word Alignment
+### Phase 4: Resolver + Word Alignment — Status: In Progress (parity hardening)
 
 **Files**: `src/Resolver.ts`
 
@@ -1813,7 +1696,7 @@ A bottom-up implementation order that ensures each phase can be tested independe
 2. Use an npm package like `difflib` or `diff-match-patch`
 The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 
-### Phase 5: Prompting System
+### Phase 5: Prompting System — Status: Complete
 
 **Files**: `src/Prompting.ts`
 
@@ -1825,7 +1708,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1, Phase 3 (FormatHandler)
 **Tests**: Port prompting_test.py
 
-### Phase 6: Chunking System
+### Phase 6: Chunking System — Status: Complete
 
 **Files**: `src/Chunking.ts`
 
@@ -1839,7 +1722,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1, Phase 2 (Tokenizer)
 **Tests**: Port chunking_test.py + token-budget batching tests
 
-### Phase 7: Provider System
+### Phase 7: Provider System — Status: In Progress (runtime control + observability complete; parity hardening ongoing)
 
 **Files**: `src/LanguageModel.ts`, `src/PrimedCache.ts`, `src/RuntimeControl.ts`, `src/ProviderSchema.ts`, `src/providers/AiAdapters.ts`, `src/providers/Gemini.ts`, `src/providers/OpenAI.ts`, `src/providers/Ollama.ts`, `src/providers/GeminiSchema.ts`
 
@@ -1857,7 +1740,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1 (errors, ScoredOutput), Phase 6 (Config)
 **Tests**: `@effect/vitest` layer-driven provider tests + mock/integration API tests
 
-### Phase 8: Prompt Validation
+### Phase 8: Prompt Validation — Status: Complete
 
 **Files**: `src/PromptValidation.ts`
 
@@ -1870,7 +1753,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1, Phase 2, Phase 4 (Resolver/WordAligner)
 **Tests**: Port prompt_validation_test.py
 
-### Phase 9: Annotation Orchestration
+### Phase 9: Annotation Orchestration — Status: Complete
 
 **Files**: `src/Annotator.ts`
 
@@ -1883,7 +1766,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1-8 (all previous phases)
 **Tests**: Port annotation_test.py + multi-pass plan-reuse parity tests
 
-### Phase 10: Top-Level API + I/O
+### Phase 10: Top-Level API + I/O — Status: Complete
 
 **Files**: `src/Extract.ts`, `src/IO.ts`
 
@@ -1896,7 +1779,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1-9
 **Tests**: Port integration tests
 
-### Phase 11: Visualization
+### Phase 11: Visualization — Status: In Progress (renderer parity hardening)
 
 **Files**: `src/Visualization.ts`
 
@@ -1909,7 +1792,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1 (data models)
 **Tests**: Port visualization_test.py
 
-### Phase 12: CLI
+### Phase 12: CLI — Status: Complete
 
 **Files**: `src/Cli.ts`, `src/index.ts`
 
@@ -1922,7 +1805,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: All previous phases
 **Tests**: CLI integration tests
 
-### Phase 13: Effect Service Tests (Vitest + Test Layers)
+### Phase 13: Effect Service Tests (Vitest + Test Layers) — Status: Complete
 
 **Files**: `test/**/*.test.ts`, `test/layers/*.ts`, `vitest.config.ts`
 
@@ -2077,7 +1960,7 @@ for (const { segment } of segmenter.segment(text)) { ... }
 
 **Python**: Uses `json` (stdlib) and `yaml` (PyYAML) for parsing.
 
-**Effect**: Uses `JSON.parse()` for JSON. For YAML, use a lightweight npm package like `yaml` (the `yaml` package on npm). YAML support is mainly for prompt template file loading and formatting; most LLM output is JSON.
+**Effect**: Uses schema/effect codec paths for JSON (`Schema.parseJson`) and `yaml` package parsing for YAML, with strict/non-strict fallback behavior in `FormatHandler`. Core source paths should avoid direct `JSON.parse`/`JSON.stringify` usage.
 
 ### 10.12 HTTP Requests
 
@@ -2109,33 +1992,52 @@ Performance optimizations are allowed only when the following behaviors remain u
 
 ## 11. Platform-Bun Integration
 
-The Bun runtime is our primary deployment target, so SPEC.md should explain which `@effect/platform-bun` layers are required for the CLI runtime, networking, file system, configuration, and worker services.
+The runtime split is explicit:
 
-### 11.1 CLI & Runtime Entry Point
+- Bun default entrypoint: `src/runtime/BunMain.ts`
+- Node-ready entrypoint: `src/runtime/NodeMain.ts`
+- Shared Node composition helper: `src/runtime/NodeRuntime.ts`
 
-- `@effect/platform-bun/BunRuntime` exposes `runMain: RunMain` (`node_modules/@effect/platform-bun/dist/dts/BunRuntime.d.ts`).  The CLI entrypoint in `src/index.ts` should wrap the `cli` command with `runMain` so Bun initializes Effect’s runtime, handles shutdown hooks, and keeps the process alive.
-- The contextual services that `runMain` expects are grouped in `@effect/platform-bun/BunContext` (`dist/dts/BunContext.d.ts`).  SPEC.md should state that `src/Cli.ts` layers `BunContext.layer`, `BunCommandExecutor.layer`, and `BunTerminal.layer` so the CLI’s progress reporting, shell helpers, and worker supervision resolve through Bun-specific implementations.
+### 11.1 Bun Runtime Composition
 
-### 11.2 HttpClient & Fetch Surface
+The Bun main path composes:
 
-- Provider clients (Gemini, OpenAI, Ollama) and helpers such as `downloadText()` must rely on the `HttpClient` service from `@effect/platform`. Document that `@effect/platform-bun/BunHttpPlatform` (`dist/dts/BunHttpPlatform.d.ts`) wires Bun’s `fetch`/`Request`/`Blob` into the HTTP platform. Filesystem and cache-backed etag services are provided separately by `BunFileSystem` and key-value/etag layers.
-- When a local HTTP server is required (visualization preview, test doubles) `@effect/platform-bun/BunHttpServer` hosts Bun’s `Bun.serve()` and exposes layers (`layer`, `layerContext`, `layerTest`, `layerConfig`) that supply `HttpServer`, `HttpPlatform`, `Etag`, and `BunContext`.  The spec should call out `BunHttpServerRequest.toRequest` (`dist/dts/BunHttpServerRequest.d.ts`) as the bridge from Bun requests to `@effect/platform/HttpServerRequest`.
+- `BunContext.layer`
+- `FetchHttpClient.layer`
+- Filesystem-backed `KeyValueStore` via `BunKeyValueStore.layerFileSystem`
 
-### 11.3 File System & Cache Persistence
+Optional worker-runner integration is supported behind runtime env flag:
 
-- `@effect/platform-bun/BunFileSystem.layer` provides the `FileSystem` service that download helpers, example loaders, JSONL writers, and cache cleanup rely on.  Combine it with `BunPath.layer`, `layerPosix`, or `layerWin32` (`dist/dts/BunPath.d.ts`) so all path calculations respect the Bun `fs` semantics used throughout `src/IO.ts` and CLI option parsing.
-- Persistence layers such as `KeyValueStore` should use `@effect/platform-bun/BunKeyValueStore.layerFileSystem` (`dist/dts/BunKeyValueStore.d.ts`) so cached prompts/examples/embedding indexes are written to Bun’s filesystem with the same directory convention as the CLI.
+- `LANGEXTRACT_ENABLE_BUN_WORKERS=true`
 
-### 11.4 Environment & Configuration Support
+### 11.2 Node Runtime Composition
 
-- Document that all configuration (API keys, timeouts, provider endpoints, `ServeOptions`) is resolved through `effect/Config`, and that `BunHttpServer.layerConfig` (`dist/dts/BunHttpServer.d.ts`) is the prescribed way to read server options from the environment and start Bun servers automatically.
-- Since `BunContext.layer` exposes `Terminal`, `CommandExecutor`, `Path`, `FileSystem`, and `WorkerManager`, note that CLI features (progress logging, shell helpers, worker supervision) should consume those services through the Bun context layer instead of re-implementing platform checks.
+The Node main path composes:
 
-### 11.5 Worker & Background Runtime Setup
+- `NodeFileSystem.layer`
+- `FetchHttpClient.layer`
+- Node filesystem-backed `KeyValueStore`
+- Node terminal/path/command layers for CLI runtime requirements
 
-- `@effect/platform-bun/BunWorker` exports the Bun-native worker manager (`layerManager`), platform worker (`layerWorker`), and platform-specific layer constructor (`layerPlatform`) from `dist/dts/BunWorker.d.ts`. The spec should state that chunk processing leverages these layers along with `WorkerRunner` abstractions so pipeline concurrency maps to managed Bun workers instead of raw `new Worker()`.
-- `@effect/platform-bun/BunWorkerRunner.layer` (`dist/dts/BunWorkerRunner.d.ts`) fulfills the `WorkerRunner.PlatformRunner` requirement and re-exports `launch` from `@effect/platform/WorkerRunner`.  Mention in SPEC.md that worker cache layers (for tokenizer caches, alignment indexes, etc.) share the same `BunKeyValueStore` file-system backing so caches stay consistent across workers.
-- Reinforce that `BunRuntime.runMain` remains the deterministic entry point even when spawning background workers or servers, ensuring there is only one `main()` orchestrating the Bun program.
+This keeps core services platform-neutral while allowing runtime-specific outer layering only in runtime modules.
+
+### 11.3 Provider and IO Surfaces
+
+Provider and IO code paths remain on `@effect/platform` abstractions:
+
+- `HttpClient` for network calls
+- `FileSystem` for file IO
+- `KeyValueStore` for persisted primed cache
+
+No core production module should rely on runtime globals for IO behavior.
+
+### 11.4 Clean-Break Runtime Policy
+
+This port is clean-break by design:
+
+- No legacy fake-provider runtime path in production exports
+- No backward-compatibility runtime shims
+- Runtime-specific provisioning isolated to entry/runtime composition modules
 
 ---
 

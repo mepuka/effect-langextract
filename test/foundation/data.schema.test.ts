@@ -5,14 +5,15 @@ import {
   AnnotatedDocument,
   CharInterval,
   Document,
+  DocumentIdGenerator,
   Extraction,
-  makeDocument
+  makeDocumentEffect
 } from "../../src/Data.js"
 
 describe("Data schemas", () => {
   it.effect("round-trips Document through schema encode/decode", () =>
     Effect.gen(function* () {
-      const source = makeDocument({
+      const source = yield* makeDocumentEffect({
         text: "Marie Curie discovered radium.",
         additionalContext: "Physics history"
       })
@@ -23,7 +24,7 @@ describe("Data schemas", () => {
       expect(decoded.text).toBe(source.text)
       expect(decoded.additionalContext).toBe("Physics history")
       expect(decoded.documentId).toBeDefined()
-    })
+    }).pipe(Effect.provide(DocumentIdGenerator.Test))
   )
 
   it.effect("constructs Extraction with optional intervals", () =>

@@ -62,7 +62,10 @@ export const extract = (options: ExtractOptions) =>
 
     if (options.promptValidationLevel && options.promptValidationLevel !== "off") {
       const validator = yield* PromptValidator
-      const report = yield* validator.validatePromptAlignment(options.examples)
+      const report = yield* validator.validatePromptAlignment(
+        options.examples,
+        undefined
+      )
       yield* validator.handleAlignmentReport(report, options.promptValidationLevel)
     }
 

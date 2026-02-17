@@ -8,6 +8,12 @@ import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import { runCli } from "../../src/Cli.js"
+import {
+  AnnotatedDocument,
+  CharInterval,
+  Extraction
+} from "../../src/Data.js"
+import { encodeAnnotatedDocumentJson } from "../../src/DataLib.js"
 import { LanguageModel } from "../../src/LanguageModel.js"
 
 const tempPath = (name: string): string =>
@@ -33,6 +39,29 @@ const writeExamplesFile = (path: string): Effect.Effect<void> =>
           ]
         }
       ])
+      yield* fileSystem.writeFileString(path, encoded)
+    })
+  )
+
+const writeAnnotatedDocument = (path: string): Effect.Effect<void> =>
+  withBunFileSystem(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem
+      const document = new AnnotatedDocument({
+        text: "Alice visited Paris.",
+        extractions: [
+          new Extraction({
+            extractionClass: "person",
+            extractionText: "Alice",
+            alignmentStatus: "match_exact",
+            charInterval: new CharInterval({
+              startPos: 0,
+              endPos: 5
+            })
+          })
+        ]
+      })
+      const encoded = yield* encodeAnnotatedDocumentJson(document)
       yield* fileSystem.writeFileString(path, encoded)
     })
   )
@@ -99,6 +128,42 @@ describe("Effect CLI subcommands", () => {
       expect((parsed.extractions?.length ?? 0) > 0).toBe(true)
 
       yield* removeFile(examplesPath)
+      yield* removeFile(outputPath)
+    })
+  )
+
+  it.effect("runs typed visualize subcommand", () =>
+    Effect.gen(function* () {
+      const inputPath = tempPath("annotated.json")
+      const outputPath = tempPath("output.html")
+      yield* writeAnnotatedDocument(inputPath)
+
+      yield* runCli(
+        [
+          "bun",
+          "src/main.ts",
+          "visualize",
+          "--input",
+          inputPath,
+          "--output-path",
+          outputPath,
+          "--animation-speed",
+          "0.5",
+          "--show-legend",
+          "true"
+        ],
+        {
+          env: process.env,
+          primedCacheStoreLayer: KeyValueStore.layerMemory,
+          languageModelLayer: mockLanguageModelLayer,
+          emitResultToStdout: false
+        }
+      ).pipe(Effect.provide(runtimeLayer))
+
+      const html = yield* readTextFile(outputPath)
+      expect(html).toContain("<mark")
+
+      yield* removeFile(inputPath)
       yield* removeFile(outputPath)
     })
   )

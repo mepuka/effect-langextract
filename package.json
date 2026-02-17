@@ -8,8 +8,10 @@
   },
   "scripts": {
     "prepare": "effect-language-service patch",
+    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "cli": "bun run src/main.ts",
+    "cli:node": "bun run build && node dist/src/runtime/NodeMain.js",
     "test": "vitest run",
     "test:live": "LANGEXTRACT_LIVE_PROVIDER_SMOKE=true vitest run",
     "test:watch": "vitest",
@@ -33,6 +35,8 @@
     "@effect/experimental": "^0.58.0",
     "@effect/platform": "^0.94.5",
     "@effect/platform-bun": "^0.87.1",
-    "effect": "^3.19.17"
+    "@effect/platform-node-shared": "^0.57.1",
+    "effect": "^3.19.17",
+    "yaml": "^2.8.1"
   }
 }

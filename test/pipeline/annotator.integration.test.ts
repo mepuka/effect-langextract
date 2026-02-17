@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest"
 
 import {
   Annotator,
+  DocumentIdGenerator,
   FormatHandler,
   LanguageModel,
   PromptBuilder,
@@ -26,7 +27,8 @@ const annotateRuntimeLayer = (languageModelLayer: Layer.Layer<LanguageModel>) =>
       Tokenizer.Default,
       FormatHandler.Default
     ]),
-    languageModelLayer
+    languageModelLayer,
+    DocumentIdGenerator.Test
   ])
 
 describe("Annotator integration", () => {

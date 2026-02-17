@@ -77,6 +77,17 @@ export class PromptBuilder extends Effect.Service<PromptBuilder>()(
   }
 ) {
   static readonly Test: Layer.Layer<PromptBuilder> = PromptBuilder.Default
+
+  static testLayer = (
+    template?: PromptTemplateStructured
+  ): Layer.Layer<PromptBuilder> =>
+    makePromptBuilderLayer(
+      template ??
+        new PromptTemplateStructured({
+          description: "Extract structured entities.",
+          examples: []
+        })
+    )
 }
 
 export const makePromptBuilderLayer = (

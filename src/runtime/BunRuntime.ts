@@ -1,5 +1,6 @@
 import * as BunContext from "@effect/platform-bun/BunContext"
 import * as BunKeyValueStore from "@effect/platform-bun/BunKeyValueStore"
+import * as BunWorkerRunner from "@effect/platform-bun/BunWorkerRunner"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as FileSystem from "@effect/platform/FileSystem"
@@ -12,12 +13,22 @@ export const makeBunKeyValueStoreLayer = (
   BunKeyValueStore.layerFileSystem(cacheDir).pipe(Layer.orDie)
 
 export const makeBunRuntimeLayer = (
-  cacheDir: string
+  cacheDir: string,
+  options?: {
+    readonly includeWorkers?: boolean | undefined
+  }
 ): Layer.Layer<
   FileSystem.FileSystem | HttpClient.HttpClient | KeyValueStore.KeyValueStore
 > =>
-  Layer.mergeAll(
-    BunContext.layer,
-    FetchHttpClient.layer,
-    makeBunKeyValueStoreLayer(cacheDir)
-  )
+  options?.includeWorkers
+    ? Layer.mergeAll(
+        BunContext.layer,
+        FetchHttpClient.layer,
+        makeBunKeyValueStoreLayer(cacheDir),
+        BunWorkerRunner.layer
+      )
+    : Layer.mergeAll(
+        BunContext.layer,
+        FetchHttpClient.layer,
+        makeBunKeyValueStoreLayer(cacheDir)
+      )

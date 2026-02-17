@@ -1,13 +1,14 @@
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as HttpClientRequest from "@effect/platform/HttpClientRequest"
 import * as HttpClientResponse from "@effect/platform/HttpClientResponse"
-import { Effect, Layer, Schema, Stream } from "effect"
+import { Clock, Effect, Layer, Schema, Stream } from "effect"
 
 import { InferenceRuntimeError } from "../Errors.js"
 import { FormatType, ScoredOutput } from "../FormatType.js"
 import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { LanguageModel } from "../LanguageModel.js"
 import { PrimedCache, PrimedCacheKey, PrimedCachePolicy } from "../PrimedCache.js"
+import { RuntimeControl } from "../RuntimeControl.js"
 
 export interface OllamaConfigService {
   readonly modelId: string
@@ -111,6 +112,22 @@ const toInferenceRuntimeError = (
           }`
   })
 
+const withProviderPermit = <A, E>(
+  runtimeControl: RuntimeControl,
+  effect: Effect.Effect<A, E>
+): Effect.Effect<A, E> =>
+  Effect.acquireUseRelease(
+    runtimeControl.acquireProviderPermit("ollama"),
+    () => effect,
+    () => runtimeControl.releaseProviderPermit("ollama")
+  )
+
+const logProviderEvent = (
+  message: string,
+  fields: Readonly<Record<string, unknown>>
+): Effect.Effect<void> =>
+  Effect.logDebug(message).pipe(Effect.annotateLogs(fields))
+
 const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, "")
 
 const invokeOllama = (
@@ -164,11 +181,13 @@ const invokeOllama = (
 const runPromptInference = (
   config: OllamaConfigService,
   cache: PrimedCache,
+  runtimeControl: RuntimeControl,
   client: HttpClient.HttpClient,
   prompt: string,
   options?: InferOptions
 ): Effect.Effect<ReadonlyArray<ScoredOutput>, InferenceRuntimeError> =>
   Effect.gen(function* () {
+    const startedAtMs = yield* Clock.currentTimeMillis
     const key = cacheKeyForPrompt(config.modelId, prompt, options)
     const keyString = `${key.namespace}:${key.provider}:${key.modelId}:${key.promptFingerprint}`
     const deterministic = isDeterministicRequest(options)
@@ -184,10 +203,19 @@ const runPromptInference = (
     )
 
     if (cached !== undefined) {
+      yield* logProviderEvent("langextract.provider.cache_hit", {
+        provider: "ollama",
+        modelId: config.modelId,
+        key: keyString,
+        promptVersion: key.promptVersion
+      })
       return withCacheMetadata(cached, keyString, "hit")
     }
 
-    const output = yield* invokeOllama(config, client, prompt)
+    const output = yield* withProviderPermit(
+      runtimeControl,
+      invokeOllama(config, client, prompt)
+    )
     const scored = [
       new ScoredOutput({
         provider: "ollama",
@@ -202,12 +230,22 @@ const runPromptInference = (
       )
     )
 
+    const finishedAtMs = yield* Clock.currentTimeMillis
+    yield* logProviderEvent("langextract.provider.cache_miss", {
+      provider: "ollama",
+      modelId: config.modelId,
+      key: keyString,
+      promptVersion: key.promptVersion,
+      latencyMs: Math.max(0, finishedAtMs - startedAtMs)
+    })
+
     return withCacheMetadata(scored, keyString, "miss")
   })
 
 const makeOllamaLanguageModelService = (
   config: OllamaConfigService,
   cache: PrimedCache,
+  runtimeControl: RuntimeControl,
   client: HttpClient.HttpClient
 ): LanguageModelService => ({
   modelId: config.modelId,
@@ -216,18 +254,40 @@ const makeOllamaLanguageModelService = (
   infer: (batchPrompts, inferOptions) =>
     Effect.forEach(
       batchPrompts,
-      (prompt) => runPromptInference(config, cache, client, prompt, inferOptions),
+      (prompt) =>
+        runPromptInference(
+          config,
+          cache,
+          runtimeControl,
+          client,
+          prompt,
+          inferOptions
+        ),
       {
         concurrency:
           inferOptions?.providerConcurrency ?? config.providerConcurrency
       }
     ),
   generateText: (prompt, inferOptions) =>
-    runPromptInference(config, cache, client, prompt, inferOptions).pipe(
+    runPromptInference(
+      config,
+      cache,
+      runtimeControl,
+      client,
+      prompt,
+      inferOptions
+    ).pipe(
       Effect.map((values) => values[0] ?? new ScoredOutput({}))
     ),
   generateObject: (prompt, inferOptions) =>
-    runPromptInference(config, cache, client, prompt, inferOptions).pipe(
+    runPromptInference(
+      config,
+      cache,
+      runtimeControl,
+      client,
+      prompt,
+      inferOptions
+    ).pipe(
       Effect.flatMap((values) =>
         Schema.decodeUnknown(JsonString)(values[0]?.output ?? "{}").pipe(
           Effect.flatMap((decoded) => Schema.decodeUnknown(JsonRecord)(decoded)),
@@ -239,7 +299,14 @@ const makeOllamaLanguageModelService = (
     ),
   streamText: (prompt, inferOptions) =>
     Stream.fromEffect(
-      runPromptInference(config, cache, client, prompt, inferOptions).pipe(
+      runPromptInference(
+        config,
+        cache,
+        runtimeControl,
+        client,
+        prompt,
+        inferOptions
+      ).pipe(
         Effect.map((values) => values[0]?.output ?? "")
       )
     )
@@ -272,13 +339,16 @@ export const OllamaConfigLive: Layer.Layer<OllamaConfig> = OllamaConfig.Default
 export const OllamaLanguageModelLive: Layer.Layer<
   LanguageModel,
   never,
-  OllamaConfig | PrimedCache | HttpClient.HttpClient
+  OllamaConfig | PrimedCache | RuntimeControl | HttpClient.HttpClient
 > = Layer.effect(
   LanguageModel,
   Effect.gen(function* () {
     const config = yield* OllamaConfig
     const cache = yield* PrimedCache
+    const runtimeControl = yield* RuntimeControl
     const client = yield* HttpClient.HttpClient
-    return LanguageModel.make(makeOllamaLanguageModelService(config, cache, client))
+    return LanguageModel.make(
+      makeOllamaLanguageModelService(config, cache, runtimeControl, client)
+    )
   })
 )

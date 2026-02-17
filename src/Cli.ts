@@ -6,7 +6,7 @@ import { Effect, Layer, Schema } from "effect"
 import * as Console from "effect/Console"
 
 import { Annotator } from "./Annotator.js"
-import { AnnotatedDocument, ExampleData } from "./Data.js"
+import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "./Data.js"
 import { decodeAnnotatedDocumentJson, encodeAnnotatedDocumentJson } from "./DataLib.js"
 import { InferenceConfigError } from "./Errors.js"
 import { extract } from "./Extract.js"
@@ -21,6 +21,7 @@ import {
 import { PromptValidator } from "./PromptValidation.js"
 import { PromptBuilder } from "./Prompting.js"
 import { Resolver } from "./Resolver.js"
+import { RuntimeControl } from "./RuntimeControl.js"
 import { Tokenizer } from "./Tokenizer.js"
 import { Visualizer } from "./Visualization.js"
 import {
@@ -89,6 +90,13 @@ export interface CliRuntimeOptions {
     | undefined
   readonly languageModelLayer?: Layer.Layer<LanguageModel> | undefined
   readonly emitResultToStdout?: boolean | undefined
+}
+
+export interface ExecuteVisualizeCommandOptions {
+  readonly input: string
+  readonly outputPath?: string | undefined
+  readonly animationSpeed?: number | undefined
+  readonly showLegend?: boolean | undefined
 }
 
 export interface ResolvedExtractCommandConfig {
@@ -411,7 +419,7 @@ const resolveInputText = (
 const makeProviderLayer = (
   config: ResolvedExtractCommandConfig,
   cacheLayer: Layer.Layer<PrimedCache>
-): Layer.Layer<LanguageModel, never, HttpClient.HttpClient> => {
+): Layer.Layer<LanguageModel, never, HttpClient.HttpClient | RuntimeControl> => {
   const policy = new PrimedCachePolicy({
     enabled: config.primedCacheEnabled,
     namespace: config.primedCacheNamespace,
@@ -486,7 +494,11 @@ const makeExecutionLayer = (
     ...(storeLayer !== undefined ? { keyValueStoreLayer: storeLayer } : {})
   })
 
-  const providerLayer: Layer.Layer<LanguageModel, never, HttpClient.HttpClient> =
+  const providerLayer: Layer.Layer<
+    LanguageModel,
+    never,
+    HttpClient.HttpClient | RuntimeControl
+  > =
     languageModelLayer ?? makeProviderLayer(config, cacheLayer)
 
   const resolverLayer = Layer.provide(Resolver.DefaultWithoutDependencies, [
@@ -499,15 +511,23 @@ const makeExecutionLayer = (
     PromptBuilder.Default,
     FormatHandler.Default,
     resolverLayer,
-    providerLayer
+    providerLayer,
+    DocumentIdGenerator.Default
   ])
 
-  return Layer.mergeAll(
+  const promptValidatorLayer = Layer.provide(
+    PromptValidator.DefaultWithoutDependencies,
+    [resolverLayer]
+  )
+
+  const mergedLayer = Layer.mergeAll(
     annotatorLayer,
-    PromptValidator.Default,
+    promptValidatorLayer,
     cacheLayer,
     Visualizer.Default
   )
+
+  return Layer.provideMerge(mergedLayer, RuntimeControl.Default)
 }
 
 const writeOutput = (
@@ -634,6 +654,71 @@ export const executeExtractCommand = (
       )
     )
   })
+
+export const executeVisualizeCommand = (
+  options: ExecuteVisualizeCommandOptions
+): Effect.Effect<
+  string,
+  InferenceConfigError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    if (options.input.trim().length === 0) {
+      return yield* new InferenceConfigError({
+        message: "Visualize command requires a non-empty --input path."
+      })
+    }
+
+    const raw = yield* readTextFile(options.input).pipe(
+      Effect.mapError(
+        (error) =>
+          new InferenceConfigError({
+            message: error.message
+          })
+      )
+    )
+
+    const document = yield* decodeAnnotatedDocumentJson(raw).pipe(
+      Effect.mapError(
+        (error) =>
+          new InferenceConfigError({
+            message: `Failed to decode annotated document JSON (${options.input}): ${String(error)}`
+          })
+      )
+    )
+
+    const html = yield* Effect.gen(function* () {
+      const visualizer = yield* Visualizer
+      return yield* visualizer.visualize(document, {
+        ...(options.animationSpeed !== undefined
+          ? { animationSpeed: options.animationSpeed }
+          : {}),
+        ...(options.showLegend !== undefined
+          ? { showLegend: options.showLegend }
+          : {})
+      })
+    }).pipe(
+      Effect.mapError(
+        (error) =>
+          new InferenceConfigError({
+            message: `Failed to render visualization HTML: ${String(error)}`
+          })
+      )
+    )
+
+    if (options.outputPath !== undefined) {
+      yield* writeTextFile(options.outputPath, html).pipe(
+        Effect.mapError(
+          (error) =>
+            new InferenceConfigError({
+              message: error.message
+            })
+        )
+      )
+    }
+
+    return html
+  }).pipe(Effect.provide(Visualizer.Default))
 
 const optionalTextOption = (
   name: string,
@@ -770,6 +855,24 @@ const extractCliConfig = {
 
 type ExtractCliConfig = Command.Command.ParseConfig<typeof extractCliConfig>
 
+const visualizeCliConfig = {
+  input: Options.withDescription(
+    Options.text("input"),
+    "Path to an annotated document JSON file."
+  ),
+  outputPath: optionalTextOption("output-path", "Output HTML file path."),
+  animationSpeed: optionalFloatOption(
+    "animation-speed",
+    "Animation speed in seconds."
+  ),
+  showLegend: optionalBooleanOption(
+    "show-legend",
+    "Render extraction legend (true|false)."
+  )
+} as const
+
+type VisualizeCliConfig = Command.Command.ParseConfig<typeof visualizeCliConfig>
+
 const runExtractFromCli = (
   config: ExtractCliConfig,
   runtime: CliRuntimeOptions
@@ -801,6 +904,24 @@ const runExtractFromCli = (
     })
   )
 
+const runVisualizeFromCli = (
+  config: VisualizeCliConfig,
+  runtime: CliRuntimeOptions
+): Effect.Effect<void, InferenceConfigError, FileSystem.FileSystem> =>
+  executeVisualizeCommand({
+    input: config.input,
+    outputPath: config.outputPath,
+    animationSpeed: config.animationSpeed,
+    showLegend: config.showLegend
+  }).pipe(
+    Effect.flatMap((html) => {
+      if (runtime.emitResultToStdout === false || config.outputPath !== undefined) {
+        return Effect.void
+      }
+      return Console.log(html)
+    })
+  )
+
 export const makeExtractCommand = (
   runtime: CliRuntimeOptions = {}
 )=>
@@ -810,17 +931,34 @@ export const makeExtractCommand = (
     (config) => runExtractFromCli(config, runtime)
   ).pipe(Command.withDescription("Extract structured data from text, files, or URLs."))
 
+export const makeVisualizeCommand = (
+  runtime: CliRuntimeOptions = {}
+)=>
+  Command.make(
+    "visualize",
+    visualizeCliConfig,
+    (config) => runVisualizeFromCli(config, runtime)
+  ).pipe(
+    Command.withDescription(
+      "Render HTML visualization from an annotated document JSON file."
+    )
+  )
+
 export const makeCliCommand = (
   runtime: CliRuntimeOptions = {}
 )=>
   Command.make(
     "effect-langextract",
     {},
-    () => Console.log("Use the `extract` subcommand. Run with `--help` for details.")
+    () =>
+      Console.log(
+        "Use the `extract` or `visualize` subcommand. Run with `--help` for details."
+      )
   ).pipe(
     Command.withDescription("Effect-native LangExtract CLI."),
     Command.withSubcommands([
-      makeExtractCommand(runtime)
+      makeExtractCommand(runtime),
+      makeVisualizeCommand(runtime)
     ])
   )
 

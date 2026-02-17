@@ -1,10 +1,11 @@
 import * as NativeLanguageModel from "@effect/ai/LanguageModel"
-import { Effect, Schema, Stream } from "effect"
+import { Clock, Effect, Schema, Stream } from "effect"
 
 import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { InferenceRuntimeError } from "../Errors.js"
 import { ScoredOutput } from "../FormatType.js"
 import { PrimedCache, PrimedCacheKey } from "../PrimedCache.js"
+import { RuntimeControl } from "../RuntimeControl.js"
 
 const JsonString = Schema.parseJson()
 const JsonRecord = Schema.Record({
@@ -81,12 +82,34 @@ const toInferenceRuntimeError = (
           }`
   })
 
+const withProviderPermit = <A, E>(
+  runtimeControl: RuntimeControl,
+  provider: string,
+  effect: Effect.Effect<A, E>
+): Effect.Effect<A, E> =>
+  Effect.acquireUseRelease(
+    runtimeControl.acquireProviderPermit(provider),
+    () => effect,
+    () => runtimeControl.releaseProviderPermit(provider)
+  )
+
+const logProviderEvent = (
+  message: string,
+  fields: Readonly<Record<string, unknown>>
+): Effect.Effect<void> =>
+  Effect.logDebug(message).pipe(Effect.annotateLogs(fields))
+
 const invokeNativeText = (
   nativeModel: NativeLanguageModel.Service,
   provider: string,
-  prompt: string
+  prompt: string,
+  runtimeControl: RuntimeControl
 ): Effect.Effect<string, InferenceRuntimeError> =>
-  nativeModel.generateText({ prompt }).pipe(
+  withProviderPermit(
+    runtimeControl,
+    provider,
+    nativeModel.generateText({ prompt })
+  ).pipe(
     Effect.map((response) => response.text),
     Effect.mapError((error) =>
       toInferenceRuntimeError(provider, "Provider text generation failed", error)
@@ -98,10 +121,12 @@ const runPromptInference = (
   provider: string,
   modelId: string,
   cache: PrimedCache,
+  runtimeControl: RuntimeControl,
   prompt: string,
   options?: InferOptions
 ): Effect.Effect<ReadonlyArray<ScoredOutput>, InferenceRuntimeError> =>
   Effect.gen(function* () {
+    const startedAtMs = yield* Clock.currentTimeMillis
     const key = cacheKeyForPrompt(provider, modelId, prompt, options)
     const keyString = `${key.namespace}:${key.provider}:${key.modelId}:${key.promptFingerprint}`
     const deterministic = isDeterministicRequest(options)
@@ -117,10 +142,21 @@ const runPromptInference = (
     )
 
     if (cached !== undefined) {
+      yield* logProviderEvent("langextract.provider.cache_hit", {
+        provider,
+        modelId,
+        key: keyString,
+        promptVersion: key.promptVersion
+      })
       return withCacheMetadata(cached, keyString, "hit")
     }
 
-    const output = yield* invokeNativeText(nativeModel, provider, prompt)
+    const output = yield* invokeNativeText(
+      nativeModel,
+      provider,
+      prompt,
+      runtimeControl
+    )
     const scored = [
       new ScoredOutput({
         provider,
@@ -135,6 +171,15 @@ const runPromptInference = (
       )
     )
 
+    const finishedAtMs = yield* Clock.currentTimeMillis
+    yield* logProviderEvent("langextract.provider.cache_miss", {
+      provider,
+      modelId,
+      key: keyString,
+      promptVersion: key.promptVersion,
+      latencyMs: Math.max(0, finishedAtMs - startedAtMs)
+    })
+
     return withCacheMetadata(scored, keyString, "miss")
   })
 
@@ -143,6 +188,7 @@ export const makeProviderLanguageModelService = (options: {
   readonly modelId: string
   readonly requiresFenceOutput?: boolean
   readonly cache: PrimedCache
+  readonly runtimeControl: RuntimeControl
   readonly nativeModel: NativeLanguageModel.Service
   readonly defaultProviderConcurrency?: number | undefined
 }): LanguageModelService => ({
@@ -158,6 +204,7 @@ export const makeProviderLanguageModelService = (options: {
           options.provider,
           options.modelId,
           options.cache,
+          options.runtimeControl,
           prompt,
           inferOptions
         ),
@@ -174,6 +221,7 @@ export const makeProviderLanguageModelService = (options: {
       options.provider,
       options.modelId,
       options.cache,
+      options.runtimeControl,
       prompt,
       inferOptions
     ).pipe(Effect.map((values) => values[0] ?? new ScoredOutput({}))),
@@ -189,6 +237,7 @@ export const makeProviderLanguageModelService = (options: {
           options.provider,
           options.modelId,
           options.cache,
+          options.runtimeControl,
           prompt,
           inferOptions
         ).pipe(
@@ -216,11 +265,12 @@ export const makeProviderLanguageModelService = (options: {
     Stream.fromEffect(
       runPromptInference(
         options.nativeModel,
-        options.provider,
-        options.modelId,
-        options.cache,
-        prompt,
-        inferOptions
-      ).pipe(Effect.map((values) => values[0]?.output ?? ""))
+          options.provider,
+          options.modelId,
+          options.cache,
+          options.runtimeControl,
+          prompt,
+          inferOptions
+        ).pipe(Effect.map((values) => values[0]?.output ?? ""))
     )
 })

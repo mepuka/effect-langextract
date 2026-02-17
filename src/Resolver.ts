@@ -312,6 +312,13 @@ export class Resolver extends Effect.Service<Resolver>()(
   }
 ) {
   static readonly Test: Layer.Layer<Resolver> = Resolver.Default
+
+  static testLayer = (
+    service?: ResolverService
+  ): Layer.Layer<Resolver, never, FormatHandler | Tokenizer> =>
+    service !== undefined
+      ? Layer.succeed(Resolver, Resolver.make(service as any))
+      : Resolver.DefaultWithoutDependencies
 }
 
 export const ResolverLive: Layer.Layer<Resolver> = Resolver.Default

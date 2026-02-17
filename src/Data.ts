@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 
 export const EXTRACTIONS_KEY = "extractions" as const
 export const ATTRIBUTE_SUFFIX = "_attributes" as const
@@ -45,6 +45,37 @@ export class Document extends Schema.Class<Document>("Document")({
   additionalContext: Schema.optionalWith(Schema.String, { exact: true })
 }) {}
 
+export interface DocumentIdGeneratorService {
+  readonly next: Effect.Effect<string>
+}
+
+const makeDefaultDocumentIdGenerator = (): DocumentIdGeneratorService => {
+  let sequence = 0
+  return {
+    next: Effect.sync(() => {
+      sequence += 1
+      return `doc_${sequence.toString(16).padStart(8, "0")}`
+    })
+  }
+}
+
+export class DocumentIdGenerator extends Effect.Service<DocumentIdGenerator>()(
+  "@effect-langextract/DocumentIdGenerator",
+  {
+    sync: makeDefaultDocumentIdGenerator
+  }
+) {
+  static readonly Test: Layer.Layer<DocumentIdGenerator> = DocumentIdGenerator.Default
+
+  static testLayer = (
+    service?: DocumentIdGeneratorService
+  ): Layer.Layer<DocumentIdGenerator> =>
+    Layer.succeed(
+      DocumentIdGenerator,
+      DocumentIdGenerator.make(service ?? makeDefaultDocumentIdGenerator())
+    )
+}
+
 export const makeDocument = (args: {
   readonly text: string
   readonly documentId?: string | undefined
@@ -52,10 +83,27 @@ export const makeDocument = (args: {
 }): Document =>
   new Document({
     text: args.text,
-    documentId: args.documentId ?? `doc_${crypto.randomUUID().slice(0, 8)}`,
+    ...(args.documentId !== undefined ? { documentId: args.documentId } : {}),
     ...(args.additionalContext !== undefined
       ? { additionalContext: args.additionalContext }
       : {})
+  })
+
+export const makeDocumentEffect = (args: {
+  readonly text: string
+  readonly documentId?: string | undefined
+  readonly additionalContext?: string | undefined
+}): Effect.Effect<Document, never, DocumentIdGenerator> =>
+  Effect.gen(function* () {
+    const generator = yield* DocumentIdGenerator
+    const documentId = args.documentId ?? (yield* generator.next)
+    return makeDocument({
+      text: args.text,
+      documentId,
+      ...(args.additionalContext !== undefined
+        ? { additionalContext: args.additionalContext }
+        : {})
+    })
   })
 
 export class AnnotatedDocument extends Schema.Class<AnnotatedDocument>("AnnotatedDocument")({

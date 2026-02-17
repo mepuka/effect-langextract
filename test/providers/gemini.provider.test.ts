@@ -4,8 +4,8 @@ import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
-  AnthropicConfig,
-  AnthropicLanguageModelLive,
+  GeminiConfig,
+  GeminiLanguageModelLive,
   LanguageModel,
   PrimedCachePolicy,
   RuntimeControl,
@@ -14,15 +14,15 @@ import {
 
 const liveEnabled =
   (process.env.LANGEXTRACT_LIVE_PROVIDER_SMOKE ?? "").toLowerCase() === "true" &&
-  (process.env.ANTHROPIC_API_KEY ?? "").length > 0
+  (process.env.GEMINI_API_KEY ?? "").length > 0
 
-const anthropicRuntimeLayer = Layer.provide(
-  AnthropicLanguageModelLive,
+const geminiRuntimeLayer = Layer.provide(
+  GeminiLanguageModelLive,
   [
-    AnthropicConfig.testLayer({
-      modelId: process.env.ANTHROPIC_MODEL_ID ?? "claude-3-5-sonnet-latest",
-      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
-      baseUrl: process.env.ANTHROPIC_BASE_URL,
+    GeminiConfig.testLayer({
+      modelId: process.env.GEMINI_MODEL_ID ?? "gemini-2.5-flash",
+      apiKey: process.env.GEMINI_API_KEY ?? "",
+      baseUrl: process.env.GEMINI_BASE_URL,
       temperature: 0,
       providerConcurrency: 2
     }),
@@ -35,13 +35,13 @@ const anthropicRuntimeLayer = Layer.provide(
   ]
 )
 
-describe("Anthropic provider layer", () => {
+describe("Gemini provider layer", () => {
   it.effect("runs live smoke only when explicitly enabled", () =>
     liveEnabled
       ? Effect.gen(function* () {
           const languageModel = yield* LanguageModel
           const policy = new PrimedCachePolicy({
-            namespace: "anthropic-live-smoke",
+            namespace: "gemini-live-smoke",
             enabled: true,
             ttlSeconds: 30,
             deterministicOnly: true
@@ -56,7 +56,7 @@ describe("Anthropic provider layer", () => {
           )
 
           expect((result[0]?.[0]?.output ?? "").length).toBeGreaterThan(0)
-        }).pipe(Effect.provide(anthropicRuntimeLayer))
+        }).pipe(Effect.provide(geminiRuntimeLayer))
       : Effect.sync(() => {
           expect(true).toBe(true)
         })
