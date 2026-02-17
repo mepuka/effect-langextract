@@ -59,6 +59,16 @@ Build as a CLI tool using `@effect/cli`:
 - `.reference/langextract/` — original Python implementation (the source of truth for behavior)
 - `.reference/effect/` — Effect monorepo for API patterns and examples
 
+## Searching Reference Code
+
+`.reference/` is gitignored, so `colgrep` cannot index it directly. Use these paths instead:
+
+- **langextract (Python original)**: `colgrep "query" ~/Dev/langextract-ref`
+- **Effect monorepo**: `colgrep "query" ~/Dev/effect`
+- **This project**: `colgrep "query"` (no path needed)
+
+For exact text/regex searches in `.reference/`, use `Grep` or `Read` tools directly — those are not affected by gitignore.
+
 ## Runtime
 
 - Use `bun` as the package manager and runtime
