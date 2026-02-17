@@ -63,9 +63,9 @@ export class AlignmentExecutor extends Effect.Service<AlignmentExecutor>()(
             tokenOffset,
             charOffset,
             normalizedOptions
-          ) as Effect.Effect<ReadonlyArray<Extraction>, AlignmentError>
+          )
         }
-      } as AlignmentExecutorService
+      } satisfies AlignmentExecutorService
     })
   }
 ) {
@@ -75,7 +75,7 @@ export class AlignmentExecutor extends Effect.Service<AlignmentExecutor>()(
     service?: AlignmentExecutorService
   ): Layer.Layer<AlignmentExecutor, never, Resolver> =>
     service !== undefined
-      ? Layer.succeed(AlignmentExecutor, AlignmentExecutor.make(service as any))
+      ? Layer.succeed(AlignmentExecutor, AlignmentExecutor.make(service))
       : AlignmentExecutor.DefaultWithoutDependencies
 }
 

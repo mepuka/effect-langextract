@@ -4,7 +4,8 @@ import { Context, Effect, Layer } from "effect"
 
 import {
   AlignmentExecutor,
-  type AlignChunkOptions
+  type AlignChunkOptions,
+  type AlignmentExecutorService
 } from "../AlignmentExecutor.js"
 import { AlignmentError } from "../Errors.js"
 import { type Extraction } from "../Data.js"
@@ -63,16 +64,18 @@ export const makeBunAlignmentExecutorLayer = (options?: {
   readonly poolSize?: number | undefined
 }): Layer.Layer<AlignmentExecutor> => {
   if (!hasWorkerConstructor()) {
+    const unavailableService = {
+      alignChunk: () =>
+        Effect.fail(
+          new AlignmentError({
+            message: "Bun worker runtime is unavailable in this environment."
+          })
+        )
+    } satisfies AlignmentExecutorService
+
     return Layer.succeed(
       AlignmentExecutor,
-      AlignmentExecutor.make({
-        alignChunk: () =>
-          Effect.fail(
-            new AlignmentError({
-              message: "Bun worker runtime is unavailable in this environment."
-            })
-          )
-      } as any)
+      AlignmentExecutor.make(unavailableService)
     )
   }
 
@@ -84,7 +87,7 @@ export const makeBunAlignmentExecutorLayer = (options?: {
       Effect.gen(function* () {
         const pool = yield* AlignmentWorkerPool
 
-        return AlignmentExecutor.make({
+        const workerService = {
           alignChunk: (
             extractions: ReadonlyArray<Extraction>,
             sourceText: string,
@@ -118,7 +121,9 @@ export const makeBunAlignmentExecutorLayer = (options?: {
                 })
               )
               .pipe(Effect.mapError(toAlignmentError))
-        } as any)
+        } satisfies AlignmentExecutorService
+
+        return AlignmentExecutor.make(workerService)
       })
     ),
     poolLayer

@@ -74,6 +74,7 @@ const validatePromptAlignmentImpl = (
           fuzzyAlignmentThreshold: policy?.fuzzyAlignmentThreshold ?? 0.75,
           acceptMatchLesser: policy?.acceptMatchLesser ?? true
         })
+        .pipe(Effect.catchAll(() => Effect.succeed([] as const)))
 
       for (const extraction of example.extractions) {
         const match = aligned.find(

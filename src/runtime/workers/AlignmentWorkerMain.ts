@@ -33,6 +33,7 @@ const WorkerLive = WorkerRunner.layerSerialized(AlignmentWorkerMessage, {
               : {})
           }
         )
+        .pipe(Effect.orDie)
     })
 }).pipe(Layer.provide(Resolver.Default), Layer.provide(BunWorkerRunner.layer))
 
