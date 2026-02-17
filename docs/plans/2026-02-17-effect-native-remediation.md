@@ -9,6 +9,18 @@ Locked decisions for this plan:
 2. `visualize` CLI input contract is annotated JSON only.
 3. Migration posture is clean break (no compatibility shims).
 
+## Status Update (2026-02-17)
+
+Completed:
+1. P1-1 through P1-5.
+2. P2-1 through P2-5.
+3. P3-1 through P3-4.
+
+Artifact paths:
+1. Performance benchmark reports: `.cache/perf/annotator-throughput.latest.json` and `.cache/perf/annotator-throughput-<timestamp>.json`.
+2. Worker alignment runtime wiring: `src/runtime/BunAlignmentWorker.ts` and `src/runtime/workers/*`.
+3. Provider smoke matrix command: `bun run test:smoke:providers`.
+
 ## Scope
 
 In scope:

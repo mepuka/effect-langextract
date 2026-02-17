@@ -1,4 +1,5 @@
 export * from "./Annotator.js"
+export * from "./AlignmentExecutor.js"
 export * from "./Chunking.js"
 export * from "./Cli.js"
 export * from "./Data.js"

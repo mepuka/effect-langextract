@@ -262,20 +262,26 @@ const parseOutputImpl = (
   text: string,
   config: FormatHandlerConfig,
   options?: { strict?: boolean }
-): Effect.Effect<ReadonlyArray<Record<string, unknown>>, FormatParseError> =>
-  parseOutputStrict(text, config, options?.strict ?? config.strictFences).pipe(
+): Effect.Effect<ReadonlyArray<Record<string, unknown>>, FormatParseError> => {
+  const strict = options?.strict ?? config.strictFences
+
+  return parseOutputStrict(text, config, strict).pipe(
+    Effect.tapError(() =>
+      Effect.logDebug("langextract.format.parse_failed").pipe(
+        Effect.annotateLogs({
+          formatType: config.formatType,
+          strict,
+          useFences: config.useFences,
+          strictFences: config.strictFences,
+          allowTopLevelList: config.allowTopLevelList
+        })
+      )
+    ),
     Effect.catchAll((error) =>
-      options?.strict ?? config.strictFences
-        ? Effect.fail(error)
-        : Effect.logWarning("langextract.format.parse_failed").pipe(
-            Effect.annotateLogs({
-              formatType: config.formatType,
-              strict: false
-            }),
-            Effect.zipRight(Effect.succeed([] as const))
-          )
+      strict ? Effect.fail(error) : Effect.succeed([] as const)
     )
   )
+}
 
 const encodeExtractionExample = (extractions: ReadonlyArray<Extraction>): string => {
   try {

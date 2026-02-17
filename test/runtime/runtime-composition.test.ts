@@ -28,7 +28,7 @@ describe("Runtime composition", () => {
   )
 
   it.effect("executes CLI with Node runtime composition helper", () =>
-    runCli(["node", "dist/runtime/NodeMain.js", "--help"], {
+    runCli(["node", "dist/src/runtime/NodeMain.js", "--help"], {
       env: process.env,
       emitResultToStdout: false
     }).pipe(

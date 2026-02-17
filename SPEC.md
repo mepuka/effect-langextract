@@ -23,7 +23,7 @@ langextract/providers/router.py    -> (eliminated -- replaced by Effect Layer co
 langextract/providers/builtin_registry.py -> (eliminated -- replaced by Effect Layer composition)
 langextract/providers/__init__.py  -> (eliminated -- replaced by Effect Layer composition)
 langextract/providers/gemini.py    -> src/providers/Gemini.ts   (GeminiLanguageModel Layer)
-langextract/providers/gemini_batch.py -> src/providers/GeminiBatch.ts (Batch API support)
+langextract/providers/gemini_batch.py -> (eliminated -- clean-break; provider adapters are unified via src/providers/AiAdapters.ts)
 langextract/providers/openai.py    -> src/providers/OpenAI.ts   (OpenAILanguageModel Layer)
 langextract/providers/ollama.py    -> src/providers/Ollama.ts   (OllamaLanguageModel Layer)
 langextract/providers/schemas/gemini.py -> src/providers/GeminiSchema.ts (Gemini JSON schema generation)
@@ -36,12 +36,15 @@ langextract/prompt_validation.py   -> src/PromptValidation.ts   (Validation of f
 langextract/io.py                  -> src/IO.ts                 (Dataset loading, JSONL I/O, URL download)
 langextract/visualization.py       -> src/Visualization.ts      (HTML visualization generation)
 langextract/rate_limits.py         -> src/RuntimeControl.ts     (Rate limiting, provider throughput controls)
+(new)                              -> src/AlignmentExecutor.ts  (Alignment execution service abstraction for local/worker-backed alignment)
 langextract/progress.py            -> (eliminated -- replaced by Effect logging)
 langextract/factory.py             -> (eliminated -- replaced by Effect Layer composition + Config)
 langextract/plugins.py             -> (eliminated -- no plugin system needed; use Layer composition)
 langextract/__init__.py            -> src/index.ts              (Public API re-exports)
 (new)                              -> src/Cli.ts                (@effect/cli command definitions)
 (new)                              -> src/providers/AiAdapters.ts (@effect/ai provider adapters for infer())
+(new)                              -> src/runtime/BunAlignmentWorker.ts (Bun worker-backed alignment layer)
+(new)                              -> src/runtime/workers/*     (alignment worker protocol + worker entrypoint)
 ```
 
 ---
@@ -1722,7 +1725,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 **Dependencies**: Phase 1, Phase 2 (Tokenizer)
 **Tests**: Port chunking_test.py + token-budget batching tests
 
-### Phase 7: Provider System — Status: In Progress (runtime control + observability complete; parity hardening ongoing)
+### Phase 7: Provider System — Status: Complete (runtime control + observability hardening complete)
 
 **Files**: `src/LanguageModel.ts`, `src/PrimedCache.ts`, `src/RuntimeControl.ts`, `src/ProviderSchema.ts`, `src/providers/AiAdapters.ts`, `src/providers/Gemini.ts`, `src/providers/OpenAI.ts`, `src/providers/Ollama.ts`, `src/providers/GeminiSchema.ts`
 
@@ -1736,6 +1739,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 - Runtime control layers (`RateLimiter`, optional `RequestResolver.dataLoader`)
 - Each provider implements `infer()/generateText()/generateObject()/streamText()` with primed-cache read/write behavior
 - Provider-level concurrency is explicitly separate from pipeline concurrency
+- Provider permit handling is enforced across infer/text/object paths, including object fallback behavior
 
 **Dependencies**: Phase 1 (errors, ScoredOutput), Phase 6 (Config)
 **Tests**: `@effect/vitest` layer-driven provider tests + mock/integration API tests
@@ -1762,6 +1766,8 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 - Multi-pass annotation with non-overlapping merge and chunk-plan reuse
 - Document chunk iteration
 - Batch processing with Effect concurrency and bounded fan-out (`batchConcurrency × providerConcurrency`)
+- Prompt/token preparation is computed once per chunk before batching
+- Alignment execution is delegated through `AlignmentExecutor` with deterministic fallback to local resolver alignment
 
 **Dependencies**: Phase 1-8 (all previous phases)
 **Tests**: Port annotation_test.py + multi-pass plan-reuse parity tests
@@ -1801,6 +1807,7 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 - Visualize command
 - Layer composition based on CLI options
 - Entry point that wires everything together
+- Runtime options allow injection of alignment execution layers without changing command surface
 
 **Dependencies**: All previous phases
 **Tests**: CLI integration tests
@@ -1990,6 +1997,25 @@ Performance optimizations are allowed only when the following behaviors remain u
 - Prompt context semantics: context-window and additional-context changes must invalidate cache hits through key derivation.
 - Concurrency semantics: failures in parallel inference still fail the enclosing effect (no silent drops).
 
+### 10.16 Alignment Execution Abstraction
+
+Alignment execution is now routed through a dedicated service boundary:
+
+- `src/AlignmentExecutor.ts` defines `alignChunk(...)`.
+- Default implementation delegates to `Resolver.align`.
+- Runtime modules can provide alternate implementations (for example worker-backed alignment) without modifying core orchestration.
+- Annotator falls back to local resolver alignment if the injected executor fails, preserving extraction continuity.
+
+### 10.17 Performance Harness
+
+Performance verification is report-based (no hard fail threshold in CI by default):
+
+- `scripts/perf/annotator-throughput.ts` runs deterministic fixture benchmarks.
+- Reports are emitted under `.cache/perf`.
+- Scripts:
+  - `bun run perf:annotator`
+  - `bun run perf:annotator:report`
+
 ## 11. Platform-Bun Integration
 
 The runtime split is explicit:
@@ -2006,9 +2032,16 @@ The Bun main path composes:
 - `FetchHttpClient.layer`
 - Filesystem-backed `KeyValueStore` via `BunKeyValueStore.layerFileSystem`
 
-Optional worker-runner integration is supported behind runtime env flag:
+Optional Bun worker-backed alignment is supported behind runtime env flags:
 
 - `LANGEXTRACT_ENABLE_BUN_WORKERS=true`
+- `LANGEXTRACT_BUN_WORKER_POOL_SIZE=<n>` (optional, default: resolved `batch-concurrency`, clamp `1..16`)
+
+Worker path wiring is runtime-only:
+
+- `src/runtime/BunAlignmentWorker.ts` builds the Bun worker pool layer.
+- `src/runtime/workers/AlignmentWorkerProtocol.ts` defines serialized request/response schema.
+- `src/runtime/workers/AlignmentWorkerMain.ts` hosts the worker runner entrypoint.
 
 ### 11.2 Node Runtime Composition
 
@@ -2038,6 +2071,7 @@ This port is clean-break by design:
 - No legacy fake-provider runtime path in production exports
 - No backward-compatibility runtime shims
 - Runtime-specific provisioning isolated to entry/runtime composition modules
+- If Bun worker runtime is unavailable, alignment execution falls back through the local resolver path in annotator orchestration
 
 ---
 

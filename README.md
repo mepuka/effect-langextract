@@ -17,6 +17,7 @@ The core is runtime-neutral and provider-native:
 bun install
 bun run typecheck
 bun run test
+bun run perf:annotator
 bun run cli -- extract --text "Alice visited Paris" --examples-file ./examples.json --provider anthropic
 bun run cli -- visualize --input ./annotated-document.json --output-path ./output.html
 ```
@@ -27,11 +28,26 @@ Node-ready runtime composition is also available:
 bun run cli:node -- extract --text "Alice visited Paris" --examples-file ./examples.json --provider anthropic
 ```
 
+## Performance Harness
+
+Deterministic benchmark reports are written under `.cache/perf`:
+
+```bash
+bun run perf:annotator
+bun run perf:annotator:report
+```
+
+Artifacts:
+- `.cache/perf/annotator-throughput.latest.json`
+- `.cache/perf/annotator-throughput-<timestamp>.json`
+
 ## Runtime Layering
 
 - Core command execution: `src/Cli.ts`
 - Bun runtime composition: `src/runtime/BunRuntime.ts`
 - Bun entrypoint: `src/runtime/BunMain.ts`
+- Bun worker alignment runtime: `src/runtime/BunAlignmentWorker.ts`
+- Bun worker protocol/entry: `src/runtime/workers/*`
 - Node-ready composition helper: `src/runtime/NodeRuntime.ts`
 - Node entrypoint: `src/runtime/NodeMain.ts`
 
@@ -61,14 +77,31 @@ Live provider smoke tests are opt-in:
 LANGEXTRACT_LIVE_PROVIDER_SMOKE=true bun run test
 ```
 
-Ollama smoke tests are separately gated:
+Focused provider smoke matrix (safe no-op when provider env is missing):
 
 ```bash
-LANGEXTRACT_LIVE_PROVIDER_SMOKE=true LANGEXTRACT_OLLAMA_SMOKE=true bun run test
+bun run test:smoke:providers
 ```
 
-Enable Bun worker-runner layer composition at runtime:
+Provider prerequisites:
+- OpenAI: `OPENAI_API_KEY` (optional: `OPENAI_MODEL_ID`, `OPENAI_BASE_URL`)
+- Gemini: `GEMINI_API_KEY` (optional: `GEMINI_MODEL_ID`, `GEMINI_BASE_URL`)
+- Anthropic: `ANTHROPIC_API_KEY` (optional: `ANTHROPIC_MODEL_ID`, `ANTHROPIC_BASE_URL`)
+- Ollama: running local server plus `LANGEXTRACT_OLLAMA_SMOKE=true` (optional: `OLLAMA_MODEL_ID`, `OLLAMA_BASE_URL`)
+
+Example:
+
+```bash
+LANGEXTRACT_LIVE_PROVIDER_SMOKE=true OPENAI_API_KEY=... GEMINI_API_KEY=... ANTHROPIC_API_KEY=... bun run test:smoke:providers
+```
+
+Enable Bun worker alignment runtime (runtime-only layer wiring):
 
 ```bash
 LANGEXTRACT_ENABLE_BUN_WORKERS=true bun run cli -- extract ...
 ```
+
+Worker pool sizing (optional):
+- `LANGEXTRACT_BUN_WORKER_POOL_SIZE`
+- Default: resolved `batch-concurrency`
+- Clamp: `1..16`

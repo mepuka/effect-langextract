@@ -5,6 +5,7 @@ import * as FileSystem from "@effect/platform/FileSystem"
 import { Effect, Layer, Schema } from "effect"
 import * as Console from "effect/Console"
 
+import { AlignmentExecutor } from "./AlignmentExecutor.js"
 import { Annotator } from "./Annotator.js"
 import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "./Data.js"
 import { decodeAnnotatedDocumentJson, encodeAnnotatedDocumentJson } from "./DataLib.js"
@@ -21,7 +22,10 @@ import {
 import { PromptValidator } from "./PromptValidation.js"
 import { PromptBuilder } from "./Prompting.js"
 import { Resolver } from "./Resolver.js"
-import { RuntimeControl } from "./RuntimeControl.js"
+import {
+  RuntimeControl,
+  makeRuntimeControlPermitLayer
+} from "./RuntimeControl.js"
 import { Tokenizer } from "./Tokenizer.js"
 import { Visualizer } from "./Visualization.js"
 import {
@@ -81,6 +85,7 @@ export interface ExecuteExtractCommandOptions {
     | Layer.Layer<KeyValueStore.KeyValueStore>
     | undefined
   languageModelLayer?: Layer.Layer<LanguageModel> | undefined
+  alignmentExecutorLayer?: Layer.Layer<AlignmentExecutor> | undefined
 }
 
 export interface CliRuntimeOptions {
@@ -89,6 +94,7 @@ export interface CliRuntimeOptions {
     | Layer.Layer<KeyValueStore.KeyValueStore>
     | undefined
   readonly languageModelLayer?: Layer.Layer<LanguageModel> | undefined
+  readonly alignmentExecutorLayer?: Layer.Layer<AlignmentExecutor> | undefined
   readonly emitResultToStdout?: boolean | undefined
 }
 
@@ -482,7 +488,8 @@ const makeProviderLayer = (
 const makeExecutionLayer = (
   config: ResolvedExtractCommandConfig,
   storeLayer?: Layer.Layer<KeyValueStore.KeyValueStore>,
-  languageModelLayer?: Layer.Layer<LanguageModel>
+  languageModelLayer?: Layer.Layer<LanguageModel>,
+  alignmentExecutorLayer?: Layer.Layer<AlignmentExecutor>
 ): Layer.Layer<
   Annotator | PromptValidator | PrimedCache | Visualizer,
   never,
@@ -506,10 +513,15 @@ const makeExecutionLayer = (
     FormatHandler.Default
   ])
 
+  const effectiveAlignmentExecutorLayer =
+    alignmentExecutorLayer ??
+    Layer.provide(AlignmentExecutor.DefaultWithoutDependencies, [resolverLayer])
+
   const annotatorLayer = Layer.provide(Annotator.DefaultWithoutDependencies, [
     Tokenizer.Default,
     PromptBuilder.Default,
     FormatHandler.Default,
+    effectiveAlignmentExecutorLayer,
     resolverLayer,
     providerLayer,
     DocumentIdGenerator.Default
@@ -527,7 +539,10 @@ const makeExecutionLayer = (
     Visualizer.Default
   )
 
-  return Layer.provideMerge(mergedLayer, RuntimeControl.Default)
+  return Layer.provideMerge(
+    mergedLayer,
+    makeRuntimeControlPermitLayer(config.providerConcurrency)
+  )
 }
 
 const writeOutput = (
@@ -587,7 +602,8 @@ export const executeExtractCommand = (
     const executionLayer = makeExecutionLayer(
       config,
       options.primedCacheStoreLayer,
-      options.languageModelLayer
+      options.languageModelLayer,
+      options.alignmentExecutorLayer
     )
 
     const annotated = yield* extract({
@@ -885,7 +901,8 @@ const runExtractFromCli = (
     ...config,
     env: runtime.env,
     primedCacheStoreLayer: runtime.primedCacheStoreLayer,
-    languageModelLayer: runtime.languageModelLayer
+    languageModelLayer: runtime.languageModelLayer,
+    alignmentExecutorLayer: runtime.alignmentExecutorLayer
   }).pipe(
     Effect.flatMap((annotated) => {
       if (runtime.emitResultToStdout === false || config.outputPath !== undefined) {

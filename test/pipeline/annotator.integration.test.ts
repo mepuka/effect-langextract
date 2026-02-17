@@ -2,6 +2,7 @@ import { Effect, Layer, Stream } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
+  AlignmentExecutor,
   Annotator,
   DocumentIdGenerator,
   FormatHandler,
@@ -18,18 +19,27 @@ const mockProviderLanguageModelLayer = LanguageModel.testLayer({
     "[{\"extractionClass\":\"event\",\"extractionText\":\"Alice visited\"}]"
 })
 
-const annotateRuntimeLayer = (languageModelLayer: Layer.Layer<LanguageModel>) =>
-  Layer.provide(Annotator.DefaultWithoutDependencies, [
+const annotateRuntimeLayer = (languageModelLayer: Layer.Layer<LanguageModel>) => {
+  const resolverLayer = Layer.provide(Resolver.DefaultWithoutDependencies, [
+    Tokenizer.Default,
+    FormatHandler.Default
+  ])
+
+  const alignmentExecutorLayer = Layer.provide(
+    AlignmentExecutor.DefaultWithoutDependencies,
+    [resolverLayer]
+  )
+
+  return Layer.provide(Annotator.DefaultWithoutDependencies, [
     Tokenizer.Default,
     PromptBuilder.Default,
     FormatHandler.Default,
-    Layer.provide(Resolver.DefaultWithoutDependencies, [
-      Tokenizer.Default,
-      FormatHandler.Default
-    ]),
+    alignmentExecutorLayer,
+    resolverLayer,
     languageModelLayer,
     DocumentIdGenerator.Test
   ])
+}
 
 describe("Annotator integration", () => {
   it.effect("emits aligned extractions from provider output", () =>

@@ -196,6 +196,13 @@ const runPromptInference = (
       isDeterministic: deterministic
     } as const
 
+    yield* logProviderEvent("langextract.provider.request_start", {
+      provider: "ollama",
+      modelId: config.modelId,
+      key: keyString,
+      promptVersion: key.promptVersion
+    })
+
     const cached = yield* cache.get(key, cacheOptions).pipe(
       Effect.mapError((error) =>
         toInferenceRuntimeError("Failed to read primed cache", error)
@@ -215,6 +222,16 @@ const runPromptInference = (
     const output = yield* withProviderPermit(
       runtimeControl,
       invokeOllama(config, client, prompt)
+    ).pipe(
+      Effect.tapError(() =>
+        logProviderEvent("langextract.provider.request_failed", {
+          provider: "ollama",
+          modelId: config.modelId,
+          key: keyString,
+          promptVersion: key.promptVersion,
+          reason: "http_generation_failed"
+        })
+      )
     )
     const scored = [
       new ScoredOutput({

@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
+  AlignmentExecutor,
   Annotator,
   AnthropicConfig,
   DocumentIdGenerator,
@@ -84,6 +85,8 @@ describe("Service contracts", () => {
     expect(typeof PromptValidator.testLayer).toBe("function")
     expect(typeof Resolver.Test).toBe("object")
     expect(typeof Resolver.testLayer).toBe("function")
+    expect(typeof AlignmentExecutor.Test).toBe("object")
+    expect(typeof AlignmentExecutor.testLayer).toBe("function")
     expect(typeof Annotator.Test).toBe("object")
     expect(typeof Annotator.testLayer).toBe("function")
     expect(typeof Visualizer.Test).toBe("object")

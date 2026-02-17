@@ -135,6 +135,13 @@ const runPromptInference = (
       isDeterministic: deterministic
     } as const
 
+    yield* logProviderEvent("langextract.provider.request_start", {
+      provider,
+      modelId,
+      key: keyString,
+      promptVersion: key.promptVersion
+    })
+
     const cached = yield* cache.get(key, cacheOptions).pipe(
       Effect.mapError((error) =>
         toInferenceRuntimeError(provider, "Failed to read primed cache", error)
@@ -156,6 +163,16 @@ const runPromptInference = (
       provider,
       prompt,
       runtimeControl
+    ).pipe(
+      Effect.tapError(() =>
+        logProviderEvent("langextract.provider.request_failed", {
+          provider,
+          modelId,
+          key: keyString,
+          promptVersion: key.promptVersion,
+          reason: "native_text_generation_failed"
+        })
+      )
     )
     const scored = [
       new ScoredOutput({
@@ -226,12 +243,22 @@ export const makeProviderLanguageModelService = (options: {
       inferOptions
     ).pipe(Effect.map((values) => values[0] ?? new ScoredOutput({}))),
   generateObject: (prompt, inferOptions) =>
-    options.nativeModel.generateObject({
-      prompt,
-      schema: JsonRecord
-    }).pipe(
+    withProviderPermit(
+      options.runtimeControl,
+      options.provider,
+      options.nativeModel.generateObject({
+        prompt,
+        schema: JsonRecord
+      })
+    ).pipe(
       Effect.map((response) => response.value),
       Effect.catchAll(() =>
+        logProviderEvent("langextract.provider.object_fallback", {
+          provider: options.provider,
+          modelId: options.modelId,
+          reason: "native_object_generation_failed"
+        }).pipe(
+          Effect.zipRight(
         runPromptInference(
           options.nativeModel,
           options.provider,
@@ -255,6 +282,7 @@ export const makeProviderLanguageModelService = (options: {
               )
             )
           )
+        ))
         )
       ),
       Effect.mapError((error) =>
@@ -265,12 +293,12 @@ export const makeProviderLanguageModelService = (options: {
     Stream.fromEffect(
       runPromptInference(
         options.nativeModel,
-          options.provider,
-          options.modelId,
-          options.cache,
-          options.runtimeControl,
-          prompt,
-          inferOptions
-        ).pipe(Effect.map((values) => values[0]?.output ?? ""))
+        options.provider,
+        options.modelId,
+        options.cache,
+        options.runtimeControl,
+        prompt,
+        inferOptions
+      ).pipe(Effect.map((values) => values[0]?.output ?? ""))
     )
 })

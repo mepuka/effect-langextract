@@ -1,5 +1,6 @@
 import { Effect, Layer, Schema, Stream } from "effect"
 
+import { AlignmentExecutor } from "./AlignmentExecutor.js"
 import { TextChunk, chunkDocuments, makeBatches } from "./Chunking.js"
 import {
   AnnotatedDocument,
@@ -62,8 +63,15 @@ type AnnotatorDependencies = {
   readonly tokenizer: Tokenizer
   readonly promptBuilder: PromptBuilder
   readonly languageModel: LanguageModel
+  readonly alignmentExecutor: AlignmentExecutor
   readonly resolver: Resolver
   readonly documentIdGenerator: DocumentIdGenerator
+}
+
+type PreparedChunk = {
+  readonly chunk: TextChunk
+  readonly prompt: string
+  readonly estimatedTokens: number
 }
 
 const JsonString = Schema.parseJson()
@@ -167,6 +175,26 @@ const sortExtractions = (
     return (left.extractionIndex ?? 0) - (right.extractionIndex ?? 0)
   })
 
+const logAnnotatorEvent = (
+  event: string,
+  fields: Readonly<Record<string, unknown>>
+): Effect.Effect<void> =>
+  Effect.logDebug(event).pipe(Effect.annotateLogs(fields))
+
+const prepareChunks = (
+  chunks: ReadonlyArray<TextChunk>,
+  options: AnnotateOptions,
+  dependencies: AnnotatorDependencies
+): ReadonlyArray<PreparedChunk> =>
+  chunks.map((chunk) => {
+    const prompt = buildPromptForChunk(chunk, options, dependencies)
+    return {
+      chunk,
+      prompt,
+      estimatedTokens: Math.ceil(prompt.length / 4)
+    }
+  })
+
 const annotateDocumentsPass = (
   documents: ReadonlyArray<Document>,
   options: AnnotateOptions,
@@ -179,70 +207,111 @@ const annotateDocumentsPass = (
       options.maxCharBuffer,
       dependencies.tokenizer
     )
-    const batches = makeBatches(chunks, {
+    const preparedChunks = prepareChunks(chunks, options, dependencies)
+    const batches = makeBatches(preparedChunks, {
       targetBatchLength: options.batchLength,
       maxBatchInputTokens: options.maxBatchInputTokens,
-      estimateTokens: (chunk) =>
-        Math.ceil(
-          buildPromptForChunk(chunk, options, dependencies).length / 4
-        )
+      estimateTokens: (item) => item.estimatedTokens
     })
 
     const perDocument: Array<Array<Extraction>> = documents.map(() => [])
 
+    yield* logAnnotatorEvent("langextract.annotator.pass_start", {
+      passNumber,
+      documentCount: documents.length,
+      chunkCount: preparedChunks.length,
+      batchCount: batches.length,
+      batchConcurrency: options.batchConcurrency,
+      providerConcurrency: options.providerConcurrency
+    })
+
     yield* Stream.fromIterable(batches).pipe(
       Stream.mapEffect(
         (batch) => {
-          const prompts = batch.map((chunk) =>
-            buildPromptForChunk(chunk, options, dependencies)
-          )
-          return dependencies.languageModel
-            .infer(prompts, {
-              cachePolicy: options.cachePolicy,
-              providerConcurrency: options.providerConcurrency,
-              passNumber
-            })
-            .pipe(
-              Effect.mapError(toLangExtractError),
-              Effect.flatMap((outputs) =>
-                Effect.forEach(outputs, (candidateOutputs, outputIndex) => {
-                  const chunk = batch[outputIndex]
-                  if (chunk === undefined) {
-                    return Effect.void
-                  }
-
-                  const firstOutput = candidateOutputs[0]?.output ?? "[]"
-                  return dependencies.resolver
-                    .resolve(firstOutput, {
-                      suppressParseErrors: true
-                    })
-                    .pipe(
-                      Effect.mapError(toLangExtractError),
-                      Effect.flatMap((resolved) =>
-                        dependencies.resolver.align(
-                          resolved,
-                          chunk.chunkText,
-                          chunk.tokenInterval.startIndex,
-                          chunk.charInterval.startPos ?? 0,
-                          undefined
-                        )
-                      ),
-                      Effect.mapError(toLangExtractError),
-                      Effect.tap((aligned) =>
-                        Effect.sync(() => {
-                          const docIndex = chunk.documentIndex
-                          if (perDocument[docIndex] === undefined) {
-                            perDocument[docIndex] = []
-                          }
-                          perDocument[docIndex]?.push(...aligned)
-                        })
-                      ),
-                      Effect.asVoid
-                    )
+          const prompts = batch.map((item) => item.prompt)
+          return logAnnotatorEvent("langextract.annotator.batch_start", {
+            passNumber,
+            batchSize: prompts.length
+          }).pipe(
+            Effect.zipRight(
+              dependencies.languageModel
+                .infer(prompts, {
+                  cachePolicy: options.cachePolicy,
+                  providerConcurrency: options.providerConcurrency,
+                  passNumber
                 })
-              ),
-              Effect.asVoid
+                .pipe(
+                  Effect.mapError(toLangExtractError),
+                  Effect.flatMap((outputs) =>
+                    Effect.forEach(outputs, (candidateOutputs, outputIndex) => {
+                      const prepared = batch[outputIndex]
+                      if (prepared === undefined) {
+                        return Effect.void
+                      }
+                      const chunk = prepared.chunk
+
+                      const firstOutput = candidateOutputs[0]?.output ?? "[]"
+                      return dependencies.resolver
+                        .resolve(firstOutput, {
+                          suppressParseErrors: true
+                        })
+                        .pipe(
+                          Effect.mapError(toLangExtractError),
+                          Effect.flatMap((resolved) =>
+                            dependencies.alignmentExecutor
+                              .alignChunk(
+                                resolved,
+                                chunk.chunkText,
+                                chunk.tokenInterval.startIndex,
+                                chunk.charInterval.startPos ?? 0,
+                                undefined
+                              )
+                              .pipe(
+                                Effect.catchAll(() =>
+                                  logAnnotatorEvent(
+                                    "langextract.annotator.alignment_fallback",
+                                    {
+                                      passNumber,
+                                      documentIndex: chunk.documentIndex
+                                    }
+                                  ).pipe(
+                                    Effect.zipRight(
+                                      dependencies.resolver.align(
+                                        resolved,
+                                        chunk.chunkText,
+                                        chunk.tokenInterval.startIndex,
+                                        chunk.charInterval.startPos ?? 0,
+                                        undefined
+                                      )
+                                    )
+                                  )
+                                )
+                              )
+                          ),
+                          Effect.mapError(toLangExtractError),
+                          Effect.tap((aligned) =>
+                            Effect.sync(() => {
+                              const docIndex = chunk.documentIndex
+                              if (perDocument[docIndex] === undefined) {
+                                perDocument[docIndex] = []
+                              }
+                              perDocument[docIndex]?.push(...aligned)
+                            })
+                          ),
+                          Effect.asVoid
+                        )
+                    })
+                  ),
+                  Effect.tap(() =>
+                    logAnnotatorEvent("langextract.annotator.batch_complete", {
+                      passNumber,
+                      batchSize: prompts.length
+                    })
+                  ),
+                  Effect.asVoid
+                )
             )
+          )
         },
         { concurrency: options.batchConcurrency }
       ),
@@ -331,6 +400,7 @@ export class Annotator extends Effect.Service<Annotator>()(
       Tokenizer.Default,
       PromptBuilder.Default,
       LanguageModel.Default,
+      AlignmentExecutor.Default,
       FormatHandler.Default,
       Resolver.Default,
       DocumentIdGenerator.Default
@@ -339,12 +409,14 @@ export class Annotator extends Effect.Service<Annotator>()(
       const tokenizer = yield* Tokenizer
       const promptBuilder = yield* PromptBuilder
       const languageModel = yield* LanguageModel
+      const alignmentExecutor = yield* AlignmentExecutor
       const resolver = yield* Resolver
       const documentIdGenerator = yield* DocumentIdGenerator
       const dependencies: AnnotatorDependencies = {
         tokenizer,
         promptBuilder,
         languageModel,
+        alignmentExecutor,
         resolver,
         documentIdGenerator
       }
@@ -367,6 +439,7 @@ export class Annotator extends Effect.Service<Annotator>()(
     | Tokenizer
     | PromptBuilder
     | LanguageModel
+    | AlignmentExecutor
     | FormatHandler
     | Resolver
     | DocumentIdGenerator
