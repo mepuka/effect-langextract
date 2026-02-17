@@ -23,11 +23,13 @@ Audit hardening delta (non-visualization) completed in follow-up:
 4. Prompt validator isolation tests and service contract override-determinism checks added.
 5. Provider schema metadata upgraded from placeholders where format contracts are known.
 6. Runtime boundary checks confirmed (`@effect/platform-bun` only in runtime modules; no core globals).
+7. Fixture-driven extraction parity diff harness added (`scripts/parity/extract-diff-harness.ts`) with committed baselines and CI-safe test coverage.
 
 Artifact paths:
 1. Performance benchmark reports: `.cache/perf/annotator-throughput.latest.json` and `.cache/perf/annotator-throughput-<timestamp>.json`.
 2. Worker alignment runtime wiring: `src/runtime/BunAlignmentWorker.ts` and `src/runtime/workers/*`.
 3. Provider smoke matrix command: `bun run test:smoke:providers`.
+4. Parity diff report and actual outputs: `.cache/parity/extract-diff-report.latest.json` and `.cache/parity/actual/*.json`.
 
 ## Scope
 

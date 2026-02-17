@@ -45,6 +45,30 @@ Artifacts:
 - `.cache/perf/annotator-throughput.latest.json`
 - `.cache/perf/annotator-throughput-<timestamp>.json`
 
+## Parity Diff Harness
+
+Fixture-driven parity regression checks:
+
+```bash
+bun run parity:diff
+bun run parity:diff:report
+```
+
+Refresh committed baselines after intentional behavior changes:
+
+```bash
+bun run parity:diff:update
+```
+
+Inputs:
+- Cases: `test/fixtures/parity/cases.json`
+- Baselines: `test/fixtures/parity/baselines.json`
+
+Artifacts:
+- `.cache/parity/extract-diff-report.latest.json`
+- `.cache/parity/extract-diff-report-<timestamp>.json`
+- `.cache/parity/actual/*.json`
+
 ## Runtime Layering
 
 - Core command execution: `src/Cli.ts`
