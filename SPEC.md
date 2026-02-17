@@ -170,14 +170,21 @@ export class Document extends Schema.Class<Document>("Document")({
 Note: In the Python version, `Document.document_id` auto-generates a UUID if not set. In the Effect port, we handle this with a smart constructor:
 
 ```typescript
-export const makeDocument = (args: {
+export const makeDocumentEffect = (args: {
   readonly text: string
   readonly documentId?: string | undefined
   readonly additionalContext?: string | undefined
-}): Document =>
-  new Document({
-    ...args,
-    documentId: args.documentId ?? `doc_${crypto.randomUUID().slice(0, 8)}`
+}): Effect.Effect<Document, never, DocumentIdGenerator> =>
+  Effect.gen(function* () {
+    const generator = yield* DocumentIdGenerator
+    const documentId = args.documentId ?? (yield* generator.next)
+    return new Document({
+      text: args.text,
+      documentId,
+      ...(args.additionalContext !== undefined
+        ? { additionalContext: args.additionalContext }
+        : {})
+    })
   })
 ```
 
@@ -1694,6 +1701,12 @@ A bottom-up implementation order that ensures each phase can be tested independe
 **Dependencies**: Phase 1, Phase 2 (Tokenizer), Phase 3 (FormatHandler)
 **Tests**: Port resolver_test.py -- this is the most critical test suite
 
+**Remaining parity gates to close Phase 4:**
+1. Complete resolver/aligner parity fixtures covering SequenceMatcher-style edge behavior (token repeats, punctuation boundaries, overlapping near-matches).
+2. Match reference behavior for non-exact statuses (`match_greater`, `match_lesser`, `match_fuzzy`) under configured fuzzy thresholds.
+3. Verify extraction ordering and interval assignment parity across multi-extraction outputs.
+4. Document final parity evidence and move status to `Complete`.
+
 **Note on difflib port**: TypeScript does not have a built-in `difflib.SequenceMatcher`. Options:
 1. Port the core SequenceMatcher algorithm (recommended -- it is ~200 lines)
 2. Use an npm package like `difflib` or `diff-match-patch`
@@ -1797,6 +1810,12 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 
 **Dependencies**: Phase 1 (data models)
 **Tests**: Port visualization_test.py
+
+**Remaining parity gates to close Phase 11:**
+1. Add fixture parity tests for nested/overlapping spans and legend semantics.
+2. Verify deterministic HTML structure for identical inputs (stable class ordering and marker output).
+3. Confirm tooltip/annotation rendering parity with reference expectations.
+4. Document final parity evidence and move status to `Complete`.
 
 ### Phase 12: CLI — Status: Complete
 
@@ -2118,6 +2137,7 @@ src/
   LanguageModel.ts      -- LanguageModel service interface, ModelConfig
   PrimedCache.ts        -- PrimedCache service, key derivation, persistence wiring
   RuntimeControl.ts     -- Rate limiter and request coalescing layers
+  AlignmentExecutor.ts  -- Alignment execution service abstraction (local / worker-backed)
   Prompting.ts          -- PromptTemplate, QAPromptGenerator, ContextAwarePromptBuilder
   Chunking.ts           -- TextChunk, ChunkIterator, SentenceIterator, batching
   Resolver.ts           -- Resolver service, WordAligner, SequenceMatcher
@@ -2127,15 +2147,27 @@ src/
   IO.ts                 -- Dataset loading, JSONL I/O, URL download
   Visualization.ts      -- HTML visualization generation
   Cli.ts                -- @effect/cli command definitions
+  runtime/
+    BunRuntime.ts       -- Bun runtime layer composition
+    BunMain.ts          -- Bun CLI entrypoint
+    NodeRuntime.ts      -- Node runtime layer composition helpers
+    NodeMain.ts         -- Node CLI entrypoint
+    BunAlignmentWorker.ts -- Bun worker-backed alignment layer
+    workers/
+      AlignmentWorkerProtocol.ts -- Serialized worker request schema
+      AlignmentWorkerMain.ts -- Worker runner entrypoint for alignment
   providers/
     AiAdapters.ts       -- @effect/ai adapters that implement LanguageModel service
     Patterns.ts         -- Provider regex patterns (for CLI model-to-provider mapping)
     Gemini.ts           -- Gemini provider Layer + Config
-    GeminiBatch.ts      -- Gemini batch API support
     GeminiSchema.ts     -- Gemini JSON schema generation from examples
     OpenAI.ts           -- OpenAI provider Layer + Config
     Ollama.ts           -- Ollama provider Layer + Config
-  test/
-    layers/             -- TestLayer implementations for Context.Tag services
-    providers/          -- Provider + cache contract tests with @effect/vitest
+scripts/
+  perf/
+    annotator-throughput.ts -- Deterministic perf harness and JSON report output
+test/
+  layers/               -- TestLayer implementations for Context.Tag services
+  providers/            -- Provider + cache contract tests with @effect/vitest
+  runtime/              -- Runtime composition and worker-alignment parity tests
 ```
