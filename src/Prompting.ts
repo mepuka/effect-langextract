@@ -1,13 +1,14 @@
 import { Effect, Layer, Schema } from "effect"
 
 import { ExampleData } from "./Data.js"
+import { errorMessage } from "./internal/errorMessage.js"
 
 export class PromptTemplateStructured extends Schema.Class<PromptTemplateStructured>(
   "PromptTemplateStructured"
 )({
   description: Schema.String,
   examples: Schema.optionalWith(Schema.Array(ExampleData), {
-    default: () => [] as const
+    default: () => []
   })
 }) {}
 
@@ -25,7 +26,11 @@ const JsonString = Schema.parseJson()
 const encodeExampleExtractions = (example: ExampleData): string => {
   try {
     return Schema.encodeSync(JsonString)(example.extractions)
-  } catch {
+  } catch (error) {
+    console.warn("langextract.prompting.encode_failed", {
+      error: errorMessage(error),
+      fallback: "[]"
+    })
     return "[]"
   }
 }

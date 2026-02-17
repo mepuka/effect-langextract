@@ -68,4 +68,21 @@ describe("CLI config precedence", () => {
       Effect.asVoid
     )
   )
+
+  it.effect("preserves CLI precedence for provider-specific credentials", () =>
+    Effect.gen(function* () {
+      const config = yield* resolveExtractCommandConfig(
+        {
+          provider: "openai",
+          modelId: "gpt-4o-mini",
+          openAiApiKey: "cli-key"
+        },
+        {
+          OPENAI_API_KEY: "env-key"
+        }
+      )
+
+      expect(config.openAiApiKey).toBe("cli-key")
+    })
+  )
 })

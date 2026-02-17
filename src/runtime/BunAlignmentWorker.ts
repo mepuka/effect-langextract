@@ -9,6 +9,7 @@ import {
 } from "../AlignmentExecutor.js"
 import { AlignmentError } from "../Errors.js"
 import { type Extraction } from "../Data.js"
+import { errorMessage } from "../internal/errorMessage.js"
 import {
   AlignChunkRequest,
   type AlignmentWorkerMessage
@@ -30,19 +31,8 @@ const hasWorkerConstructor = (): boolean =>
   typeof globalThis.Worker === "function"
 
 const toAlignmentError = (error: unknown): AlignmentError => {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof (error as { readonly message: unknown }).message === "string"
-  ) {
-    return new AlignmentError({
-      message: (error as { readonly message: string }).message
-    })
-  }
-
   return new AlignmentError({
-    message: `Worker alignment failed: ${String(error)}`
+    message: `Worker alignment failed: ${errorMessage(error)}`
   })
 }
 

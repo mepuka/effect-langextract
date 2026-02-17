@@ -2,7 +2,7 @@ import * as NativeLanguageModel from "@effect/ai/LanguageModel"
 import * as GoogleClient from "@effect/ai-google/GoogleClient"
 import * as GoogleLanguageModel from "@effect/ai-google/GoogleLanguageModel"
 import * as HttpClient from "@effect/platform/HttpClient"
-import { Effect, Layer, Redacted } from "effect"
+import { Config, Effect, Layer, Option, Redacted } from "effect"
 
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
@@ -41,6 +41,36 @@ const defaultGeminiConfig: GeminiConfigService = {
   })
 }
 
+const GeminiConfigEnv = Config.all({
+  modelId: Config.string("GEMINI_MODEL_ID").pipe(
+    Config.withDefault(defaultGeminiConfig.modelId)
+  ),
+  apiKey: Config.string("GEMINI_API_KEY").pipe(
+    Config.withDefault(defaultGeminiConfig.apiKey)
+  ),
+  baseUrl: Config.string("GEMINI_BASE_URL").pipe(Config.option),
+  temperature: Config.number("GEMINI_TEMPERATURE").pipe(
+    Config.withDefault(defaultGeminiConfig.temperature)
+  ),
+  providerConcurrency: Config.integer("GEMINI_PROVIDER_CONCURRENCY").pipe(
+    Config.withDefault(defaultGeminiConfig.providerConcurrency)
+  ),
+  vertexai: Config.boolean("GEMINI_VERTEXAI").pipe(
+    Config.withDefault(defaultGeminiConfig.vertexai)
+  ),
+  project: Config.string("GEMINI_PROJECT").pipe(Config.option),
+  location: Config.string("GEMINI_LOCATION").pipe(Config.option),
+  formatType: Config.literal("json", "yaml")("GEMINI_FORMAT_TYPE").pipe(
+    Config.withDefault(defaultGeminiConfig.formatType)
+  ),
+  primedCacheScope: Config.literal("request", "session")(
+    "GEMINI_PRIMED_CACHE_SCOPE"
+  ).pipe(Config.withDefault(defaultGeminiConfig.primedCacheScope)),
+  primedCacheNamespace: Config.string("GEMINI_PRIMED_CACHE_NAMESPACE").pipe(
+    Config.withDefault("gemini")
+  )
+})
+
 const optionalRedacted = (value: string | undefined): Redacted.Redacted | undefined =>
   value !== undefined && value.trim().length > 0 ? Redacted.make(value) : undefined
 
@@ -66,7 +96,31 @@ export class GeminiConfig extends Effect.Service<GeminiConfig>()(
     )
 }
 
-export const GeminiConfigLive: Layer.Layer<GeminiConfig> = GeminiConfig.Default
+export const GeminiConfigFromEnv: Layer.Layer<GeminiConfig> = Layer.effect(
+  GeminiConfig,
+  GeminiConfigEnv.pipe(
+    Effect.map((loaded) =>
+      GeminiConfig.make({
+        ...defaultGeminiConfig,
+        modelId: loaded.modelId,
+        apiKey: loaded.apiKey,
+        baseUrl: Option.getOrUndefined(loaded.baseUrl),
+        temperature: loaded.temperature,
+        providerConcurrency: loaded.providerConcurrency,
+        vertexai: loaded.vertexai,
+        project: Option.getOrUndefined(loaded.project),
+        location: Option.getOrUndefined(loaded.location),
+        formatType: loaded.formatType,
+        primedCacheScope: loaded.primedCacheScope,
+        primedCachePolicy: new PrimedCachePolicy({
+          namespace: loaded.primedCacheNamespace
+        })
+      })
+    )
+  )
+).pipe(Layer.orDie)
+
+export const GeminiConfigLive: Layer.Layer<GeminiConfig> = GeminiConfigFromEnv
 
 export const GeminiNativeLanguageModelLive: Layer.Layer<
   NativeLanguageModel.LanguageModel,
@@ -76,10 +130,10 @@ export const GeminiNativeLanguageModelLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* GeminiConfig
 
+    const apiKey = optionalRedacted(config.apiKey)
+
     const clientLayer = GoogleClient.layer({
-      ...(optionalRedacted(config.apiKey) !== undefined
-        ? { apiKey: optionalRedacted(config.apiKey) }
-        : {}),
+      ...(apiKey !== undefined ? { apiKey } : {}),
       ...(config.baseUrl !== undefined ? { apiUrl: config.baseUrl } : {})
     })
 

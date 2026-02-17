@@ -1,7 +1,7 @@
 import * as FileSystem from "@effect/platform/FileSystem"
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as HttpClientResponse from "@effect/platform/HttpClientResponse"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 import { IoError } from "./Errors.js"
 
@@ -20,12 +20,12 @@ const encodeJson = (value: unknown): Effect.Effect<string, IoError> =>
   )
 
 export const isUrl = (value: string): boolean => {
-  try {
-    const url = new URL(value)
-    return url.protocol === "http:" || url.protocol === "https:"
-  } catch {
+  const parseUrl = Option.liftThrowable((input: string) => new URL(input))
+  const url = Option.getOrUndefined(parseUrl(value))
+  if (url === undefined) {
     return false
   }
+  return url.protocol === "http:" || url.protocol === "https:"
 }
 
 export const downloadText = (url: string): Effect.Effect<string, IoError, HttpClient.HttpClient> =>

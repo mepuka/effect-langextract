@@ -8,6 +8,8 @@ import {
 } from "./Data.js"
 import { AlignmentError, ResolverParsingError } from "./Errors.js"
 import { FormatHandler } from "./FormatHandler.js"
+import { errorMessage } from "./internal/errorMessage.js"
+import { asRecord } from "./internal/records.js"
 import {
   FUZZY_ALIGNMENT_MIN_THRESHOLD,
   TokenInterval,
@@ -54,11 +56,6 @@ type ExtractionLocation = {
   readonly groupIndex: number
   readonly itemIndex: number
 }
-
-const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined
 
 const extractStringField = (
   record: Readonly<Record<string, unknown>>,
@@ -170,83 +167,96 @@ const extractOrderedExtractions = (
   extractionData: ReadonlyArray<Record<string, unknown>>,
   extractionIndexSuffix: string | undefined,
   attributeSuffix: string | undefined
-): ReadonlyArray<Extraction> => {
-  const processed: Array<Extraction> = []
-  let fallbackIndex = 0
+): Effect.Effect<ReadonlyArray<Extraction>, ResolverParsingError> =>
+  Effect.gen(function* () {
+    const processed: Array<Extraction> = []
+    let fallbackIndex = 0
 
-  for (const [groupIndex, group] of extractionData.entries()) {
-    const direct = parseDirectExtractionRecord(group, fallbackIndex + 1, groupIndex)
-    if (direct !== undefined) {
-      fallbackIndex += 1
-      processed.push(direct)
-      continue
-    }
-
-    for (const [extractionClass, extractionValue] of Object.entries(group)) {
-      if (
-        extractionIndexSuffix !== undefined &&
-        extractionClass.endsWith(extractionIndexSuffix)
-      ) {
-        if (!Number.isInteger(extractionValue)) {
-          throw new Error("Index must be an integer.")
-        }
+    for (const [groupIndex, group] of extractionData.entries()) {
+      const direct = parseDirectExtractionRecord(group, fallbackIndex + 1, groupIndex)
+      if (direct !== undefined) {
+        fallbackIndex += 1
+        processed.push(direct)
         continue
       }
 
-      if (attributeSuffix !== undefined && extractionClass.endsWith(attributeSuffix)) {
-        const attributesRecord = asRecord(extractionValue)
-        if (extractionValue !== undefined && extractionValue !== null && attributesRecord === undefined) {
-          throw new Error("Extraction attributes must be an object or null.")
-        }
-        continue
-      }
-
-      if (extractionClass === "attributes" && asRecord(extractionValue) !== undefined) {
-        continue
-      }
-
-      if (!isPrimitiveExtractionValue(extractionValue)) {
-        throw new Error("Extraction text must be a primitive value.")
-      }
-
-      const extractionText = String(extractionValue)
-      let extractionIndex: number
-
-      if (extractionIndexSuffix !== undefined) {
-        const indexValue = group[`${extractionClass}${extractionIndexSuffix}`]
-        if (indexValue === undefined) {
+      for (const [extractionClass, extractionValue] of Object.entries(group)) {
+        if (
+          extractionIndexSuffix !== undefined &&
+          extractionClass.endsWith(extractionIndexSuffix)
+        ) {
+          if (!Number.isInteger(extractionValue)) {
+            return yield* new ResolverParsingError({
+              message: "Index must be an integer."
+            })
+          }
           continue
         }
-        if (typeof indexValue !== "number" || !Number.isInteger(indexValue)) {
-          throw new Error("Index must be an integer.")
+
+        if (attributeSuffix !== undefined && extractionClass.endsWith(attributeSuffix)) {
+          const attributesRecord = asRecord(extractionValue)
+          if (
+            extractionValue !== undefined &&
+            extractionValue !== null &&
+            attributesRecord === undefined
+          ) {
+            return yield* new ResolverParsingError({
+              message: "Extraction attributes must be an object or null."
+            })
+          }
+          continue
         }
-        extractionIndex = indexValue
-      } else {
-        fallbackIndex += 1
-        extractionIndex = fallbackIndex
+
+        if (extractionClass === "attributes" && asRecord(extractionValue) !== undefined) {
+          continue
+        }
+
+        if (!isPrimitiveExtractionValue(extractionValue)) {
+          return yield* new ResolverParsingError({
+            message: "Extraction text must be a primitive value."
+          })
+        }
+
+        const extractionText = String(extractionValue)
+        let extractionIndex: number
+
+        if (extractionIndexSuffix !== undefined) {
+          const indexValue = group[`${extractionClass}${extractionIndexSuffix}`]
+          if (indexValue === undefined) {
+            continue
+          }
+          if (typeof indexValue !== "number" || !Number.isInteger(indexValue)) {
+            return yield* new ResolverParsingError({
+              message: "Index must be an integer."
+            })
+          }
+          extractionIndex = indexValue
+        } else {
+          fallbackIndex += 1
+          extractionIndex = fallbackIndex
+        }
+
+        const attributes =
+          attributeSuffix !== undefined
+            ? extractAttributes(group, `${extractionClass}${attributeSuffix}`)
+            : undefined
+
+        processed.push(
+          new Extraction({
+            extractionClass,
+            extractionText,
+            extractionIndex,
+            groupIndex,
+            ...(attributes !== undefined ? { attributes } : {})
+          })
+        )
       }
-
-      const attributes =
-        attributeSuffix !== undefined
-          ? extractAttributes(group, `${extractionClass}${attributeSuffix}`)
-          : undefined
-
-      processed.push(
-        new Extraction({
-          extractionClass,
-          extractionText,
-          extractionIndex,
-          groupIndex,
-          ...(attributes !== undefined ? { attributes } : {})
-        })
-      )
     }
-  }
 
-  return processed.sort(
-    (left, right) => (left.extractionIndex ?? 0) - (right.extractionIndex ?? 0)
-  )
-}
+    return processed.sort(
+      (left, right) => (left.extractionIndex ?? 0) - (right.extractionIndex ?? 0)
+    )
+  })
 
 const tokenizeWithLowercase = (
   tokenizer: TokenizerService,
@@ -303,42 +313,7 @@ const decrementCount = (counts: Map<string, number>, key: string): void => {
 
 const copyExtraction = (extraction: Extraction): Extraction =>
   new Extraction({
-    extractionClass: extraction.extractionClass,
-    extractionText: extraction.extractionText,
-    ...(extraction.extractionIndex !== undefined
-      ? { extractionIndex: extraction.extractionIndex }
-      : {}),
-    ...(extraction.groupIndex !== undefined
-      ? { groupIndex: extraction.groupIndex }
-      : {}),
-    ...(extraction.description !== undefined
-      ? { description: extraction.description }
-      : {}),
-    ...(extraction.charInterval !== undefined &&
-      (extraction.charInterval.startPos !== undefined
-        || extraction.charInterval.endPos !== undefined)
-      ? {
-          charInterval: new CharInterval({
-            ...(extraction.charInterval.startPos !== undefined
-              ? { startPos: extraction.charInterval.startPos }
-              : {}),
-            ...(extraction.charInterval.endPos !== undefined
-              ? { endPos: extraction.charInterval.endPos }
-              : {})
-          })
-        }
-      : {}),
-    ...(extraction.tokenInterval !== undefined
-      ? {
-          tokenInterval: {
-            startIndex: extraction.tokenInterval.startIndex,
-            endIndex: extraction.tokenInterval.endIndex
-          }
-        }
-      : {}),
-    ...(extraction.attributes !== undefined
-      ? { attributes: { ...extraction.attributes } }
-      : {})
+    ...extraction
   })
 
 const stripAlignment = (extraction: Extraction): Extraction =>
@@ -368,10 +343,6 @@ class SequenceMatcher {
     sourceTokens: ReadonlyArray<string>,
     extractionTokens: ReadonlyArray<string>
   ): void {
-    if (sourceTokens.length === 0 || extractionTokens.length === 0) {
-      throw new Error("Source tokens and extraction tokens cannot be empty.")
-    }
-
     this.sourceTokens = sourceTokens
     this.extractionTokens = extractionTokens
 
@@ -557,9 +528,10 @@ const fuzzyAlignExtraction = (
   let bestStart = -1
   let bestWindowSize = -1
 
-  for (
+  const maxWindowSize = Math.min(sourceTokens.length, extractionLength * 3)
+  outer: for (
     let windowSize = extractionLength;
-    windowSize <= sourceTokens.length;
+    windowSize <= maxWindowSize;
     windowSize += 1
   ) {
     const initial = sourceTokens
@@ -583,6 +555,9 @@ const fuzzyAlignExtraction = (
           bestRatio = ratio
           bestStart = startIndex
           bestWindowSize = windowSize
+          if (bestRatio >= 1) {
+            break outer
+          }
         }
       }
 
@@ -630,142 +605,149 @@ const alignExtractions = (
   charOffset: number,
   tokenizer: TokenizerService,
   options?: AlignmentOptions
-): ReadonlyArray<ReadonlyArray<Extraction>> => {
-  if (extractionGroups.length === 0) {
-    return []
-  }
-
-  const sourceTokens = tokenizeWithLowercase(tokenizer, sourceText)
-  if (sourceTokens.length === 0) {
-    throw new Error("Source tokens and extraction tokens cannot be empty.")
-  }
-
-  const alignedGroups = extractionGroups.map((group) => group.map(copyExtraction))
-  const locationByTokenIndex = new Map<number, ExtractionLocation>()
-  const delimiterTokenLength = tokenizeWithLowercase(
-    tokenizer,
-    DEFAULT_ALIGNMENT_DELIMITER
-  ).length
-
-  if (delimiterTokenLength !== 1) {
-    throw new Error("Delimiter must be exactly one token.")
-  }
-
-  const concatenatedTokens = alignedGroups
-    .flatMap((group) => group.map((extraction) => extraction.extractionText))
-    .join(` ${DEFAULT_ALIGNMENT_DELIMITER} `)
-  const extractionTokens = tokenizeWithLowercase(tokenizer, concatenatedTokens)
-  const matcher = new SequenceMatcher()
-  matcher.setSeqs(sourceTokens, extractionTokens)
-
-  let extractionTokenIndex = 0
-  for (const [groupIndex, group] of alignedGroups.entries()) {
-    for (const [itemIndex, extraction] of group.entries()) {
-      if (extraction.extractionText.includes(DEFAULT_ALIGNMENT_DELIMITER)) {
-        throw new Error(
-          `Delimiter appears inside extraction text: ${extraction.extractionText}`
-        )
-      }
-      locationByTokenIndex.set(extractionTokenIndex, { groupIndex, itemIndex })
-      extractionTokenIndex += tokenizeWithLowercase(tokenizer, extraction.extractionText).length
-      extractionTokenIndex += delimiterTokenLength
-    }
-  }
-
-  const tokenizedSource = tokenizer.tokenize(sourceText)
-  const matchedLocations = new Set<string>()
-  const acceptMatchLesser = options?.acceptMatchLesser ?? true
-  const matchingBlocks = matcher.getMatchingBlocks().slice(0, -1)
-
-  for (const block of matchingBlocks) {
-    if (block.n <= 0) {
-      continue
-    }
-    const location = locationByTokenIndex.get(block.j)
-    if (location === undefined) {
-      continue
+): Effect.Effect<ReadonlyArray<ReadonlyArray<Extraction>>, AlignmentError> =>
+  Effect.gen(function* () {
+    if (extractionGroups.length === 0) {
+      return []
     }
 
-    const existing = alignedGroups[location.groupIndex]?.[location.itemIndex]
-    if (existing === undefined) {
-      continue
-    }
-
-    const extractionTokenLength = tokenizeWithLowercase(
-      tokenizer,
-      existing.extractionText
-    ).length
-    if (extractionTokenLength < block.n) {
-      throw new Error(
-        `Extraction token length cannot be smaller than match block size: ${existing.extractionText}`
-      )
-    }
-
-    const startToken = tokenizedSource.tokens[block.i]
-    const endToken = tokenizedSource.tokens[block.i + block.n - 1]
-    if (startToken === undefined || endToken === undefined) {
-      throw new Error("Failed to map token match to source character interval.")
-    }
-
-    if (extractionTokenLength === block.n || acceptMatchLesser) {
-      const status: AlignmentStatus =
-        extractionTokenLength === block.n ? "match_exact" : "match_lesser"
-      alignedGroups[location.groupIndex]![location.itemIndex] = new Extraction({
-        ...existing,
-        tokenInterval: new TokenInterval({
-          startIndex: block.i + tokenOffset,
-          endIndex: block.i + block.n + tokenOffset
-        }),
-        charInterval: new CharInterval({
-          startPos: (startToken.charInterval.startPos ?? 0) + charOffset,
-          endPos:
-            (endToken.charInterval.endPos ?? (startToken.charInterval.startPos ?? 0))
-            + charOffset
-        }),
-        alignmentStatus: status
+    const sourceTokens = tokenizeWithLowercase(tokenizer, sourceText)
+    if (sourceTokens.length === 0) {
+      return yield* new AlignmentError({
+        message: "Source tokens and extraction tokens cannot be empty."
       })
-      matchedLocations.add(`${location.groupIndex}:${location.itemIndex}`)
-      continue
     }
 
-    alignedGroups[location.groupIndex]![location.itemIndex] = stripAlignment(existing)
-  }
+    const alignedGroups = extractionGroups.map((group) => group.map(copyExtraction))
+    const locationByTokenIndex = new Map<number, ExtractionLocation>()
+    const delimiterTokenLength = tokenizeWithLowercase(
+      tokenizer,
+      DEFAULT_ALIGNMENT_DELIMITER
+    ).length
 
-  const enableFuzzyAlignment = options?.enableFuzzyAlignment ?? true
-  if (enableFuzzyAlignment) {
-    const fuzzyThreshold =
-      options?.fuzzyAlignmentThreshold ?? FUZZY_ALIGNMENT_MIN_THRESHOLD
+    if (delimiterTokenLength !== 1) {
+      return yield* new AlignmentError({
+        message: "Delimiter must be exactly one token."
+      })
+    }
 
+    const concatenatedTokens = alignedGroups
+      .flatMap((group) => group.map((extraction) => extraction.extractionText))
+      .join(` ${DEFAULT_ALIGNMENT_DELIMITER} `)
+    const extractionTokens = tokenizeWithLowercase(tokenizer, concatenatedTokens)
+    const matcher = new SequenceMatcher()
+    matcher.setSeqs(sourceTokens, extractionTokens)
+
+    let extractionTokenIndex = 0
     for (const [groupIndex, group] of alignedGroups.entries()) {
       for (const [itemIndex, extraction] of group.entries()) {
-        const locationId = `${groupIndex}:${itemIndex}`
-        if (matchedLocations.has(locationId)) {
-          continue
+        if (extraction.extractionText.includes(DEFAULT_ALIGNMENT_DELIMITER)) {
+          return yield* new AlignmentError({
+            message: `Delimiter appears inside extraction text: ${extraction.extractionText}`
+          })
         }
+        locationByTokenIndex.set(extractionTokenIndex, { groupIndex, itemIndex })
+        extractionTokenIndex += tokenizeWithLowercase(tokenizer, extraction.extractionText).length
+        extractionTokenIndex += delimiterTokenLength
+      }
+    }
 
-        const aligned = fuzzyAlignExtraction(
-          extraction,
-          sourceTokens,
-          tokenizedSource,
-          tokenOffset,
-          charOffset,
-          fuzzyThreshold,
-          tokenizer
-        )
-        if (aligned !== undefined) {
-          alignedGroups[groupIndex]![itemIndex] = aligned
-          matchedLocations.add(locationId)
+    const tokenizedSource = tokenizer.tokenize(sourceText)
+    const matchedLocations = new Set<string>()
+    const acceptMatchLesser = options?.acceptMatchLesser ?? true
+    const matchingBlocks = matcher.getMatchingBlocks().slice(0, -1)
+
+    for (const block of matchingBlocks) {
+      if (block.n <= 0) {
+        continue
+      }
+      const location = locationByTokenIndex.get(block.j)
+      if (location === undefined) {
+        continue
+      }
+
+      const existing = alignedGroups[location.groupIndex]?.[location.itemIndex]
+      if (existing === undefined) {
+        continue
+      }
+
+      const extractionTokenLength = tokenizeWithLowercase(
+        tokenizer,
+        existing.extractionText
+      ).length
+      if (extractionTokenLength < block.n) {
+        return yield* new AlignmentError({
+          message: `Extraction token length cannot be smaller than match block size: ${existing.extractionText}`
+        })
+      }
+
+      const startToken = tokenizedSource.tokens[block.i]
+      const endToken = tokenizedSource.tokens[block.i + block.n - 1]
+      if (startToken === undefined || endToken === undefined) {
+        return yield* new AlignmentError({
+          message: "Failed to map token match to source character interval."
+        })
+      }
+
+      if (extractionTokenLength === block.n || acceptMatchLesser) {
+        const status: AlignmentStatus =
+          extractionTokenLength === block.n ? "match_exact" : "match_lesser"
+        alignedGroups[location.groupIndex]![location.itemIndex] = new Extraction({
+          ...existing,
+          tokenInterval: new TokenInterval({
+            startIndex: block.i + tokenOffset,
+            endIndex: block.i + block.n + tokenOffset
+          }),
+          charInterval: new CharInterval({
+            startPos: (startToken.charInterval.startPos ?? 0) + charOffset,
+            endPos:
+              (endToken.charInterval.endPos ?? (startToken.charInterval.startPos ?? 0))
+              + charOffset
+          }),
+          alignmentStatus: status
+        })
+        matchedLocations.add(`${location.groupIndex}:${location.itemIndex}`)
+        continue
+      }
+
+      alignedGroups[location.groupIndex]![location.itemIndex] = stripAlignment(existing)
+    }
+
+    const enableFuzzyAlignment = options?.enableFuzzyAlignment ?? true
+    if (enableFuzzyAlignment) {
+      const fuzzyThreshold =
+        options?.fuzzyAlignmentThreshold ?? FUZZY_ALIGNMENT_MIN_THRESHOLD
+
+      for (const [groupIndex, group] of alignedGroups.entries()) {
+        for (const [itemIndex, extraction] of group.entries()) {
+          const locationId = `${groupIndex}:${itemIndex}`
+          if (matchedLocations.has(locationId)) {
+            continue
+          }
+
+          const aligned = fuzzyAlignExtraction(
+            extraction,
+            sourceTokens,
+            tokenizedSource,
+            tokenOffset,
+            charOffset,
+            fuzzyThreshold,
+            tokenizer
+          )
+          if (aligned !== undefined) {
+            alignedGroups[groupIndex]![itemIndex] = aligned
+            matchedLocations.add(locationId)
+          }
         }
       }
     }
-  }
 
-  return alignedGroups
-}
+    return alignedGroups
+  })
 
 const toResolverParsingError = (error: unknown): ResolverParsingError =>
   new ResolverParsingError({
-    message: error instanceof Error ? error.message : String(error)
+    message: errorMessage(error)
   })
 
 export class Resolver extends Effect.Service<Resolver>()(
@@ -780,25 +762,19 @@ export class Resolver extends Effect.Service<Resolver>()(
         resolve: (inputText: string, options) => {
           const strict = options?.suppressParseErrors !== true
 
-          const run = formatHandler
-            .parseOutput(inputText, { strict })
-            .pipe(
-              Effect.flatMap((records) =>
-                Effect.try({
-                  try: () =>
-                    extractOrderedExtractions(
-                      records,
-                      DEFAULT_INDEX_SUFFIX,
-                      formatHandler.config.attributeSuffix
-                    ),
-                  catch: toResolverParsingError
-                })
-              ),
-              Effect.mapError(toResolverParsingError)
+          const run = formatHandler.parseOutput(inputText, { strict }).pipe(
+            Effect.mapError(toResolverParsingError),
+            Effect.flatMap((records) =>
+              extractOrderedExtractions(
+                records,
+                DEFAULT_INDEX_SUFFIX,
+                formatHandler.config.attributeSuffix
+              )
             )
+          )
 
           return options?.suppressParseErrors === true
-            ? run.pipe(Effect.catchAll(() => Effect.succeed([] as const)))
+            ? run.pipe(Effect.catchAll(() => Effect.succeed([])))
             : run
         },
         align: (
@@ -808,21 +784,14 @@ export class Resolver extends Effect.Service<Resolver>()(
           charOffset: number,
           options
         ) =>
-          Effect.try({
-            try: () =>
-              alignExtractions(
-                [extractions],
-                sourceText,
-                tokenOffset,
-                charOffset,
-                tokenizer,
-                options
-              ).flat() as ReadonlyArray<Extraction>,
-            catch: (error) =>
-              new AlignmentError({
-                message: error instanceof Error ? error.message : String(error)
-              })
-          })
+          alignExtractions(
+            [extractions],
+            sourceText,
+            tokenOffset,
+            charOffset,
+            tokenizer,
+            options
+          ).pipe(Effect.map((groups) => groups.flat() as ReadonlyArray<Extraction>))
       } satisfies ResolverService
     })
   }

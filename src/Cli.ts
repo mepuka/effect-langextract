@@ -16,7 +16,6 @@ import { readTextFile, writeJsonl, writeTextFile } from "./IO.js"
 import { LanguageModel } from "./LanguageModel.js"
 import {
   PrimedCache,
-  PrimedCachePolicy,
   makePrimedCacheLayer
 } from "./PrimedCache.js"
 import { PromptValidator } from "./PromptValidation.js"
@@ -29,12 +28,12 @@ import {
 import { Tokenizer } from "./Tokenizer.js"
 import { Visualizer } from "./Visualization.js"
 import {
-  AnthropicConfig,
+  AnthropicConfigLive,
   AnthropicLanguageModelLive
 } from "./providers/Anthropic.js"
-import { GeminiConfig, GeminiLanguageModelLive } from "./providers/Gemini.js"
-import { OllamaConfig, OllamaLanguageModelLive } from "./providers/Ollama.js"
-import { OpenAIConfig, OpenAILanguageModelLive } from "./providers/OpenAI.js"
+import { GeminiConfigLive, GeminiLanguageModelLive } from "./providers/Gemini.js"
+import { OllamaConfigLive, OllamaLanguageModelLive } from "./providers/Ollama.js"
+import { OpenAIConfigLive, OpenAILanguageModelLive } from "./providers/OpenAI.js"
 import { detectProviderFromModelId } from "./providers/Patterns.js"
 
 export const ProviderName = Schema.Literal(
@@ -408,62 +407,89 @@ const makeProviderLayer = (
   config: ResolvedExtractCommandConfig,
   cacheLayer: Layer.Layer<PrimedCache>
 ): Layer.Layer<LanguageModel, never, HttpClient.HttpClient | RuntimeControl> => {
-  const policy = new PrimedCachePolicy({
-    enabled: config.primedCacheEnabled,
-    namespace: config.primedCacheNamespace,
-    ttlSeconds: config.primedCacheTtlSeconds,
-    deterministicOnly: config.primedCacheDeterministicOnly
-  })
+  const makeProviderConfigLayer = (
+    entries: ReadonlyArray<
+      readonly [string, string | number | boolean | undefined]
+    >
+  ): Layer.Layer<never> => {
+    const map = new Map<string, string>()
+    for (const [key, value] of entries) {
+      if (value !== undefined) {
+        map.set(key, String(value))
+      }
+    }
+    return Layer.setConfigProvider(ConfigProvider.fromMap(map))
+  }
 
   switch (config.provider) {
-    case "anthropic":
+    case "anthropic": {
+      const anthropicConfigLayer = Layer.provide(
+        AnthropicConfigLive,
+        makeProviderConfigLayer([
+          ["ANTHROPIC_MODEL_ID", config.modelId],
+          ["ANTHROPIC_API_KEY", config.anthropicApiKey],
+          ["ANTHROPIC_BASE_URL", config.anthropicBaseUrl],
+          ["ANTHROPIC_TEMPERATURE", config.temperature],
+          ["ANTHROPIC_PROVIDER_CONCURRENCY", config.providerConcurrency],
+          ["ANTHROPIC_PRIMED_CACHE_NAMESPACE", config.primedCacheNamespace]
+        ])
+      )
       return Layer.provide(AnthropicLanguageModelLive, [
-        AnthropicConfig.testLayer({
-          modelId: config.modelId,
-          apiKey: config.anthropicApiKey,
-          baseUrl: config.anthropicBaseUrl,
-          temperature: config.temperature,
-          providerConcurrency: config.providerConcurrency,
-          primedCachePolicy: policy
-        }),
+        anthropicConfigLayer,
         cacheLayer
       ])
-    case "openai":
+    }
+    case "openai": {
+      const openAiConfigLayer = Layer.provide(
+        OpenAIConfigLive,
+        makeProviderConfigLayer([
+          ["OPENAI_MODEL_ID", config.modelId],
+          ["OPENAI_API_KEY", config.openAiApiKey],
+          ["OPENAI_BASE_URL", config.openAiBaseUrl],
+          ["OPENAI_ORGANIZATION", config.openAiOrganization],
+          ["OPENAI_TEMPERATURE", config.temperature],
+          ["OPENAI_PROVIDER_CONCURRENCY", config.providerConcurrency],
+          ["OPENAI_PRIMED_CACHE_NAMESPACE", config.primedCacheNamespace]
+        ])
+      )
       return Layer.provide(OpenAILanguageModelLive, [
-        OpenAIConfig.testLayer({
-          modelId: config.modelId,
-          apiKey: config.openAiApiKey,
-          baseUrl: config.openAiBaseUrl,
-          organization: config.openAiOrganization,
-          temperature: config.temperature,
-          providerConcurrency: config.providerConcurrency,
-          primedCachePolicy: policy
-        }),
+        openAiConfigLayer,
         cacheLayer
       ])
-    case "ollama":
+    }
+    case "ollama": {
+      const ollamaConfigLayer = Layer.provide(
+        OllamaConfigLive,
+        makeProviderConfigLayer([
+          ["OLLAMA_MODEL_ID", config.modelId],
+          ["OLLAMA_BASE_URL", config.ollamaBaseUrl],
+          ["OLLAMA_TEMPERATURE", config.temperature],
+          ["OLLAMA_PROVIDER_CONCURRENCY", config.providerConcurrency],
+          ["OLLAMA_PRIMED_CACHE_NAMESPACE", config.primedCacheNamespace]
+        ])
+      )
       return Layer.provide(OllamaLanguageModelLive, [
-        OllamaConfig.testLayer({
-          modelId: config.modelId,
-          baseUrl: config.ollamaBaseUrl,
-          temperature: config.temperature,
-          providerConcurrency: config.providerConcurrency,
-          primedCachePolicy: policy
-        }),
+        ollamaConfigLayer,
         cacheLayer
       ])
-    case "gemini":
+    }
+    case "gemini": {
+      const geminiConfigLayer = Layer.provide(
+        GeminiConfigLive,
+        makeProviderConfigLayer([
+          ["GEMINI_MODEL_ID", config.modelId],
+          ["GEMINI_API_KEY", config.geminiApiKey],
+          ["GEMINI_BASE_URL", config.geminiBaseUrl],
+          ["GEMINI_TEMPERATURE", config.temperature ?? 0],
+          ["GEMINI_PROVIDER_CONCURRENCY", config.providerConcurrency],
+          ["GEMINI_PRIMED_CACHE_NAMESPACE", config.primedCacheNamespace]
+        ])
+      )
       return Layer.provide(GeminiLanguageModelLive, [
-        GeminiConfig.testLayer({
-          modelId: config.modelId,
-          apiKey: config.geminiApiKey,
-          baseUrl: config.geminiBaseUrl,
-          temperature: config.temperature ?? 0,
-          providerConcurrency: config.providerConcurrency,
-          primedCachePolicy: policy
-        }),
+        geminiConfigLayer,
         cacheLayer
       ])
+    }
   }
 }
 

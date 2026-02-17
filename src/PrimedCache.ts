@@ -3,6 +3,8 @@ import { Clock, Effect, Layer, Option, Ref, Schema } from "effect"
 
 import { PrimedCacheError } from "./Errors.js"
 import { FormatType, ScoredOutput } from "./FormatType.js"
+import { errorMessage } from "./internal/errorMessage.js"
+import { fnv1aHash } from "./internal/hash.js"
 
 export class PrimedCacheKey extends Schema.Class<PrimedCacheKey>("PrimedCacheKey")({
   provider: Schema.String,
@@ -100,15 +102,6 @@ type RequestStoreRecord = {
 
 const sanitizeSegment = (value: string): string => encodeURIComponent(value)
 
-const hashString = (value: string): string => {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0")
-}
-
 const toKeyString = (key: PrimedCacheKey): string =>
   [
     key.namespace,
@@ -129,16 +122,11 @@ const toStorageKey = (key: PrimedCacheKey, keyString: string): string =>
     sanitizeSegment(key.namespace),
     sanitizeSegment(key.provider),
     sanitizeSegment(key.modelId),
-    hashString(keyString)
+    fnv1aHash(keyString)
   ].join(":")
 
 const toNamespaceIndexKey = (namespace: string): string =>
   `index:${sanitizeSegment(namespace)}`
-
-const errorMessage = (error: unknown): string =>
-  typeof error === "object" && error !== null && "message" in error
-    ? String((error as { readonly message: unknown }).message)
-    : String(error)
 
 const toPrimedCacheError = (
   message: string,

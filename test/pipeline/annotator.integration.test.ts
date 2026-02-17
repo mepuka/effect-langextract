@@ -1,9 +1,10 @@
-import { Effect, Layer, Stream } from "effect"
+import { Chunk, Clock, Effect, Layer, Stream } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
 import {
   AlignmentExecutor,
   Annotator,
+  Document,
   DocumentIdGenerator,
   FormatHandler,
   LanguageModel,
@@ -121,4 +122,138 @@ describe("Annotator integration", () => {
       expect(extractionTexts).not.toContain("Alice visited Paris")
     })
   )
+
+  it.effect("remains deterministic with high batch concurrency", () =>
+    Effect.gen(function* () {
+      const concurrentLanguageModel = LanguageModel.make({
+        modelId: "test-concurrent",
+        requiresFenceOutput: false,
+        schema: undefined,
+        infer: (prompts) =>
+          Effect.forEach(
+            prompts,
+            () =>
+              Effect.succeed([
+                new ScoredOutput({
+                  provider: "test",
+                  output:
+                    "[{\"extractionClass\":\"event\",\"extractionText\":\"Alice visited\"}]",
+                  score: 1
+                })
+              ]),
+            { concurrency: 8 }
+          ),
+        generateText: (prompt, options) =>
+          concurrentLanguageModel.infer([prompt], options).pipe(
+            Effect.map((values) => values[0]?.[0] ?? new ScoredOutput({}))
+          ),
+        generateObject: () => Effect.succeed({}),
+        streamText: (prompt, options) =>
+          Stream.fromEffect(
+            concurrentLanguageModel.infer([prompt], options).pipe(
+              Effect.map((values) => values[0]?.[0]?.output ?? "")
+            )
+          )
+      })
+
+      const text = Array.from(
+        { length: 24 },
+        (_unused, index) => `Alice visited location ${index}.`
+      ).join(" ")
+
+      const run = Effect.gen(function* () {
+        const annotator = yield* Annotator
+        return yield* annotator.annotateText(text, {
+          maxCharBuffer: 45,
+          batchLength: 1,
+          batchConcurrency: 8,
+          providerConcurrency: 8,
+          extractionPasses: 1
+        })
+      }).pipe(
+        Effect.provide(
+          annotateRuntimeLayer(Layer.succeed(LanguageModel, concurrentLanguageModel))
+        )
+      )
+
+      const first = yield* run
+      const second = yield* run
+
+      expect(first.extractions.length).toBeGreaterThan(2)
+      expect(first.extractions.length).toBe(second.extractions.length)
+    })
+  )
+
+  it.live("streams completed documents without waiting for slower batches", () => {
+    const slowAwareLanguageModel = LanguageModel.make({
+      modelId: "test-streaming",
+      requiresFenceOutput: false,
+      schema: undefined,
+      infer: (prompts) =>
+        Effect.forEach(
+          prompts,
+          (prompt) =>
+            (prompt.includes("slow-marker")
+              ? Effect.sleep("500 millis")
+              : Effect.void
+            ).pipe(
+              Effect.as([
+                new ScoredOutput({
+                  provider: "test",
+                  output:
+                    "[{\"extractionClass\":\"event\",\"extractionText\":\"Alice visited\"}]",
+                  score: 1
+                })
+              ])
+            ),
+          { concurrency: 2 }
+        ),
+      generateText: (prompt, options) =>
+        slowAwareLanguageModel.infer([prompt], options).pipe(
+          Effect.map((values) => values[0]?.[0] ?? new ScoredOutput({}))
+        ),
+      generateObject: () => Effect.succeed({}),
+      streamText: (prompt, options) =>
+        Stream.fromEffect(
+          slowAwareLanguageModel.infer([prompt], options).pipe(
+            Effect.map((values) => values[0]?.[0]?.output ?? "")
+          )
+        )
+    })
+
+    return Effect.gen(function* () {
+      const documents = [
+        new Document({
+          text: "Alice visited quickly."
+        }),
+        new Document({
+          text: "slow-marker Alice visited eventually."
+        })
+      ] as const
+
+      const annotator = yield* Annotator
+      const started = yield* Clock.currentTimeMillis
+      const firstCompleted = yield* annotator
+        .annotateDocuments(documents, {
+          maxCharBuffer: 200,
+          batchLength: 1,
+          batchConcurrency: 2,
+          providerConcurrency: 2,
+          extractionPasses: 1
+        })
+        .pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.map((values) => Chunk.toReadonlyArray(values)[0])
+        )
+      const elapsed = (yield* Clock.currentTimeMillis) - started
+
+      expect(firstCompleted?.text).toContain("quickly")
+      expect(elapsed).toBeLessThan(450)
+    }).pipe(
+      Effect.provide(
+        annotateRuntimeLayer(Layer.succeed(LanguageModel, slowAwareLanguageModel))
+      )
+    )
+  })
 })

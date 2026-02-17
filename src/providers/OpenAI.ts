@@ -2,7 +2,7 @@ import * as NativeLanguageModel from "@effect/ai/LanguageModel"
 import * as OpenAiClient from "@effect/ai-openai/OpenAiClient"
 import * as OpenAiLanguageModel from "@effect/ai-openai/OpenAiLanguageModel"
 import * as HttpClient from "@effect/platform/HttpClient"
-import { Effect, Layer, Redacted } from "effect"
+import { Config, Effect, Layer, Option, Redacted } from "effect"
 
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
@@ -37,6 +37,30 @@ const defaultOpenAIConfig: OpenAIConfigService = {
   })
 }
 
+const OpenAIConfigEnv = Config.all({
+  modelId: Config.string("OPENAI_MODEL_ID").pipe(
+    Config.withDefault(defaultOpenAIConfig.modelId)
+  ),
+  apiKey: Config.string("OPENAI_API_KEY").pipe(
+    Config.withDefault(defaultOpenAIConfig.apiKey)
+  ),
+  baseUrl: Config.string("OPENAI_BASE_URL").pipe(Config.option),
+  organization: Config.string("OPENAI_ORGANIZATION").pipe(Config.option),
+  temperature: Config.number("OPENAI_TEMPERATURE").pipe(Config.option),
+  providerConcurrency: Config.integer("OPENAI_PROVIDER_CONCURRENCY").pipe(
+    Config.withDefault(defaultOpenAIConfig.providerConcurrency)
+  ),
+  formatType: Config.literal("json", "yaml")("OPENAI_FORMAT_TYPE").pipe(
+    Config.withDefault(defaultOpenAIConfig.formatType)
+  ),
+  primedCacheScope: Config.literal("request", "session")(
+    "OPENAI_PRIMED_CACHE_SCOPE"
+  ).pipe(Config.withDefault(defaultOpenAIConfig.primedCacheScope)),
+  primedCacheNamespace: Config.string("OPENAI_PRIMED_CACHE_NAMESPACE").pipe(
+    Config.withDefault("openai")
+  )
+})
+
 const optionalRedacted = (value: string | undefined): Redacted.Redacted | undefined =>
   value !== undefined && value.trim().length > 0 ? Redacted.make(value) : undefined
 
@@ -62,7 +86,29 @@ export class OpenAIConfig extends Effect.Service<OpenAIConfig>()(
     )
 }
 
-export const OpenAIConfigLive: Layer.Layer<OpenAIConfig> = OpenAIConfig.Default
+export const OpenAIConfigFromEnv: Layer.Layer<OpenAIConfig> = Layer.effect(
+  OpenAIConfig,
+  OpenAIConfigEnv.pipe(
+    Effect.map((loaded) =>
+      OpenAIConfig.make({
+        ...defaultOpenAIConfig,
+        modelId: loaded.modelId,
+        apiKey: loaded.apiKey,
+        baseUrl: Option.getOrUndefined(loaded.baseUrl),
+        organization: Option.getOrUndefined(loaded.organization),
+        temperature: Option.getOrUndefined(loaded.temperature),
+        providerConcurrency: loaded.providerConcurrency,
+        formatType: loaded.formatType,
+        primedCacheScope: loaded.primedCacheScope,
+        primedCachePolicy: new PrimedCachePolicy({
+          namespace: loaded.primedCacheNamespace
+        })
+      })
+    )
+  )
+).pipe(Layer.orDie)
+
+export const OpenAIConfigLive: Layer.Layer<OpenAIConfig> = OpenAIConfigFromEnv
 
 export const OpenAINativeLanguageModelLive: Layer.Layer<
   NativeLanguageModel.LanguageModel,
@@ -72,14 +118,13 @@ export const OpenAINativeLanguageModelLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* OpenAIConfig
 
+    const apiKey = optionalRedacted(config.apiKey)
+    const organization = optionalRedacted(config.organization)
+
     const clientLayer = OpenAiClient.layer({
-      ...(optionalRedacted(config.apiKey) !== undefined
-        ? { apiKey: optionalRedacted(config.apiKey) }
-        : {}),
+      ...(apiKey !== undefined ? { apiKey } : {}),
       ...(config.baseUrl !== undefined ? { apiUrl: config.baseUrl } : {}),
-      ...(optionalRedacted(config.organization) !== undefined
-        ? { organizationId: optionalRedacted(config.organization) }
-        : {})
+      ...(organization !== undefined ? { organizationId: organization } : {})
     })
 
     const modelLayer = OpenAiLanguageModel.layer({

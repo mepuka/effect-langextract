@@ -26,6 +26,8 @@ bun run cli -- extract --text "Alice visited Paris" --examples-file ./examples.j
 bun run cli -- visualize --input ./annotated-document.json --output-path ./output.html
 ```
 
+Supported test entrypoint: use `bun run test` (not `bun test`).
+
 Node-ready runtime composition is also available:
 
 ```bash

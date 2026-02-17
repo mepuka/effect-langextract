@@ -4,6 +4,8 @@ import { Clock, Effect, Schema, Stream } from "effect"
 import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { InferenceRuntimeError } from "../Errors.js"
 import { ScoredOutput } from "../FormatType.js"
+import { errorMessage } from "../internal/errorMessage.js"
+import { fnv1aHash } from "../internal/hash.js"
 import { PrimedCache, PrimedCacheKey } from "../PrimedCache.js"
 import { FormatModeSchema, type ProviderSchema } from "../ProviderSchema.js"
 import { RuntimeControl, withProviderPermitStream } from "../RuntimeControl.js"
@@ -14,16 +16,14 @@ const JsonRecord = Schema.Record({
   value: Schema.Unknown
 })
 
-const hashString = (value: string): string => {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0")
-}
+const TextDeltaPart = Schema.Struct({
+  type: Schema.Literal("text-delta"),
+  delta: Schema.String
+})
 
-const makeCacheFingerprint = (prompt: string): string => hashString(prompt)
+const isTextDeltaPart = Schema.is(TextDeltaPart)
+
+const makeCacheFingerprint = (prompt: string): string => fnv1aHash(prompt)
 
 const normalizeNamespace = (options?: InferOptions): string =>
   options?.cachePolicy?.namespace ?? "langextract"
@@ -76,11 +76,7 @@ const toInferenceRuntimeError = (
     message:
       error === undefined
         ? message
-        : `${message}: ${
-            typeof error === "object" && error !== null && "message" in error
-              ? String((error as { readonly message: unknown }).message)
-              : String(error)
-          }`
+        : `${message}: ${errorMessage(error)}`
   })
 
 const logProviderEvent = (
@@ -89,20 +85,8 @@ const logProviderEvent = (
 ): Effect.Effect<void> =>
   Effect.logDebug(message).pipe(Effect.annotateLogs(fields))
 
-const toTextDelta = (part: unknown): string | undefined => {
-  if (typeof part !== "object" || part === null) {
-    return undefined
-  }
-  if (
-    "type" in part &&
-    (part as { readonly type?: unknown }).type === "text-delta" &&
-    "delta" in part
-  ) {
-    const delta = (part as { readonly delta?: unknown }).delta
-    return typeof delta === "string" ? delta : undefined
-  }
-  return undefined
-}
+const toTextDelta = (part: unknown): string | undefined =>
+  isTextDeltaPart(part) ? part.delta : undefined
 
 const invokeNativeText = (
   nativeModel: NativeLanguageModel.Service,

@@ -73,7 +73,7 @@ For exact text/regex searches in `.reference/`, use `Grep` or `Read` tools direc
 
 - Use `bun` as the package manager and runtime
 - Use `bun run <script>` for scripts, `bun <file>` to run files
-- Use `bun test` for testing, `bun install` for dependencies
+- Use `bun run test` for testing, `bun install` for dependencies
 
 <!-- effect-solutions:start -->
 ## Effect Best Practices

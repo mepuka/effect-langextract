@@ -5,6 +5,8 @@ import { EXTRACTIONS_KEY } from "./Data.js"
 import { Extraction } from "./Data.js"
 import { FormatParseError } from "./Errors.js"
 import { FormatType } from "./FormatType.js"
+import { errorMessage } from "./internal/errorMessage.js"
+import { asRecord } from "./internal/records.js"
 
 export class FormatHandlerConfig extends Schema.Class<FormatHandlerConfig>("FormatHandlerConfig")({
   formatType: Schema.optionalWith(FormatType, {
@@ -36,11 +38,6 @@ const JsonString = Schema.parseJson()
 type SupportedFormat = "json" | "yaml"
 
 const FencePattern = /```(?:(json|yaml|yml))?\s*([\s\S]*?)```/gi
-
-const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined
 
 const toFormatParseError = (message: string): FormatParseError =>
   new FormatParseError({ message })
@@ -244,7 +241,7 @@ const parseOutputStrict = (
 
     const source = (candidate ?? text).trim()
     if (source.length === 0) {
-      return [] as const
+      return []
     }
 
     const parsed = yield* parseWithFormat(source, primaryFormat).pipe(
@@ -278,7 +275,7 @@ const parseOutputImpl = (
       )
     ),
     Effect.catchAll((error) =>
-      strict ? Effect.fail(error) : Effect.succeed([] as const)
+      strict ? Effect.fail(error) : Effect.succeed([])
     )
   )
 }
@@ -286,7 +283,11 @@ const parseOutputImpl = (
 const encodeExtractionExample = (extractions: ReadonlyArray<Extraction>): string => {
   try {
     return Schema.encodeSync(JsonString)(extractions)
-  } catch {
+  } catch (error) {
+    console.warn("langextract.format.encode_failed", {
+      error: errorMessage(error),
+      fallback: "[]"
+    })
     return "[]"
   }
 }

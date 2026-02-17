@@ -1,4 +1,4 @@
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Ref, Schema } from "effect"
 
 export const EXTRACTIONS_KEY = "extractions" as const
 export const ATTRIBUTE_SUFFIX = "_attributes" as const
@@ -50,12 +50,11 @@ export interface DocumentIdGeneratorService {
 }
 
 const makeDefaultDocumentIdGenerator = (): DocumentIdGeneratorService => {
-  let sequence = 0
+  const sequence = Effect.runSync(Ref.make(0))
   return {
-    next: Effect.sync(() => {
-      sequence += 1
-      return `doc_${sequence.toString(16).padStart(8, "0")}`
-    })
+    next: Ref.updateAndGet(sequence, (value) => value + 1).pipe(
+      Effect.map((value) => `doc_${value.toString(16).padStart(8, "0")}`)
+    )
   }
 }
 
@@ -110,14 +109,14 @@ export class AnnotatedDocument extends Schema.Class<AnnotatedDocument>("Annotate
   documentId: Schema.optionalWith(Schema.String, { exact: true }),
   text: Schema.String,
   extractions: Schema.optionalWith(Schema.Array(Extraction), {
-    default: () => [] as const
+    default: () => []
   })
 }) {}
 
 export class ExampleData extends Schema.Class<ExampleData>("ExampleData")({
   text: Schema.String,
   extractions: Schema.optionalWith(Schema.Array(Extraction), {
-    default: () => [] as const
+    default: () => []
   }),
   input: Schema.optionalWith(Schema.String, { exact: true }),
   output: Schema.optionalWith(Schema.String, { exact: true })

@@ -2,7 +2,7 @@ import * as NativeLanguageModel from "@effect/ai/LanguageModel"
 import * as AnthropicClient from "@effect/ai-anthropic/AnthropicClient"
 import * as AnthropicLanguageModel from "@effect/ai-anthropic/AnthropicLanguageModel"
 import * as HttpClient from "@effect/platform/HttpClient"
-import { Effect, Layer, Redacted } from "effect"
+import { Config, Effect, Layer, Option, Redacted } from "effect"
 
 import { FormatType } from "../FormatType.js"
 import { LanguageModel } from "../LanguageModel.js"
@@ -35,6 +35,29 @@ const defaultAnthropicConfig: AnthropicConfigService = {
   })
 }
 
+const AnthropicConfigEnv = Config.all({
+  modelId: Config.string("ANTHROPIC_MODEL_ID").pipe(
+    Config.withDefault(defaultAnthropicConfig.modelId)
+  ),
+  apiKey: Config.string("ANTHROPIC_API_KEY").pipe(
+    Config.withDefault(defaultAnthropicConfig.apiKey)
+  ),
+  baseUrl: Config.string("ANTHROPIC_BASE_URL").pipe(Config.option),
+  temperature: Config.number("ANTHROPIC_TEMPERATURE").pipe(Config.option),
+  providerConcurrency: Config.integer("ANTHROPIC_PROVIDER_CONCURRENCY").pipe(
+    Config.withDefault(defaultAnthropicConfig.providerConcurrency)
+  ),
+  formatType: Config.literal("json", "yaml")("ANTHROPIC_FORMAT_TYPE").pipe(
+    Config.withDefault(defaultAnthropicConfig.formatType)
+  ),
+  primedCacheScope: Config.literal("request", "session")(
+    "ANTHROPIC_PRIMED_CACHE_SCOPE"
+  ).pipe(Config.withDefault(defaultAnthropicConfig.primedCacheScope)),
+  primedCacheNamespace: Config.string("ANTHROPIC_PRIMED_CACHE_NAMESPACE").pipe(
+    Config.withDefault("anthropic")
+  )
+})
+
 const optionalRedacted = (value: string | undefined): Redacted.Redacted | undefined =>
   value !== undefined && value.trim().length > 0 ? Redacted.make(value) : undefined
 
@@ -60,8 +83,29 @@ export class AnthropicConfig extends Effect.Service<AnthropicConfig>()(
     )
 }
 
+export const AnthropicConfigFromEnv: Layer.Layer<AnthropicConfig> = Layer.effect(
+  AnthropicConfig,
+  AnthropicConfigEnv.pipe(
+    Effect.map((loaded) =>
+      AnthropicConfig.make({
+        ...defaultAnthropicConfig,
+        modelId: loaded.modelId,
+        apiKey: loaded.apiKey,
+        baseUrl: Option.getOrUndefined(loaded.baseUrl),
+        temperature: Option.getOrUndefined(loaded.temperature),
+        providerConcurrency: loaded.providerConcurrency,
+        formatType: loaded.formatType,
+        primedCacheScope: loaded.primedCacheScope,
+        primedCachePolicy: new PrimedCachePolicy({
+          namespace: loaded.primedCacheNamespace
+        })
+      })
+    )
+  )
+).pipe(Layer.orDie)
+
 export const AnthropicConfigLive: Layer.Layer<AnthropicConfig> =
-  AnthropicConfig.Default
+  AnthropicConfigFromEnv
 
 export const AnthropicNativeLanguageModelLive: Layer.Layer<
   NativeLanguageModel.LanguageModel,
@@ -71,10 +115,10 @@ export const AnthropicNativeLanguageModelLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* AnthropicConfig
 
+    const apiKey = optionalRedacted(config.apiKey)
+
     const clientLayer = AnthropicClient.layer({
-      ...(optionalRedacted(config.apiKey) !== undefined
-        ? { apiKey: optionalRedacted(config.apiKey) }
-        : {}),
+      ...(apiKey !== undefined ? { apiKey } : {}),
       ...(config.baseUrl !== undefined ? { apiUrl: config.baseUrl } : {})
     })
 
