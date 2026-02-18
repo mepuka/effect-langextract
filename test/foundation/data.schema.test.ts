@@ -1,5 +1,5 @@
-import { Effect, Schema } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Schema } from "effect"
 
 import {
   AnnotatedDocument,

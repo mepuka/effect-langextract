@@ -1,11 +1,10 @@
+import * as KeyValueStore from "@effect/platform/KeyValueStore"
+import * as NodeCommandExecutor from "@effect/platform-node-shared/NodeCommandExecutor"
 import * as NodeFileSystem from "@effect/platform-node-shared/NodeFileSystem"
 import * as NodePath from "@effect/platform-node-shared/NodePath"
 import * as NodeTerminal from "@effect/platform-node-shared/NodeTerminal"
-import * as NodeCommandExecutor from "@effect/platform-node-shared/NodeCommandExecutor"
-import * as KeyValueStore from "@effect/platform/KeyValueStore"
-
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
 import { runCli } from "../../src/Cli.js"
 import { makeBunRuntimeLayer } from "../../src/runtime/BunRuntime.js"

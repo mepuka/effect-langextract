@@ -13,7 +13,7 @@ import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface OpenAIConfigService {
   readonly modelId: string
-  readonly apiKey: string
+  readonly apiKey: Redacted.Redacted
   readonly baseUrl?: string | undefined
   readonly organization?: string | undefined
   readonly temperature?: number | undefined
@@ -25,7 +25,7 @@ export interface OpenAIConfigService {
 
 const defaultOpenAIConfig: OpenAIConfigService = {
   modelId: "gpt-4o-mini",
-  apiKey: "",
+  apiKey: Redacted.make(""),
   baseUrl: undefined,
   organization: undefined,
   temperature: undefined,
@@ -41,7 +41,7 @@ const OpenAIConfigEnv = Config.all({
   modelId: Config.string("OPENAI_MODEL_ID").pipe(
     Config.withDefault(defaultOpenAIConfig.modelId)
   ),
-  apiKey: Config.string("OPENAI_API_KEY").pipe(
+  apiKey: Config.redacted("OPENAI_API_KEY").pipe(
     Config.withDefault(defaultOpenAIConfig.apiKey)
   ),
   baseUrl: Config.string("OPENAI_BASE_URL").pipe(Config.option),
@@ -61,8 +61,10 @@ const OpenAIConfigEnv = Config.all({
   )
 })
 
-const optionalRedacted = (value: string | undefined): Redacted.Redacted | undefined =>
-  value !== undefined && value.trim().length > 0 ? Redacted.make(value) : undefined
+const nonEmptyRedacted = (value: Redacted.Redacted): Redacted.Redacted | undefined => {
+  const raw = Redacted.value(value)
+  return raw.trim().length > 0 ? value : undefined
+}
 
 export class OpenAIConfig extends Effect.Service<OpenAIConfig>()(
   "@effect-langextract/providers/OpenAIConfig",
@@ -118,8 +120,10 @@ export const OpenAINativeLanguageModelLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* OpenAIConfig
 
-    const apiKey = optionalRedacted(config.apiKey)
-    const organization = optionalRedacted(config.organization)
+    const apiKey = nonEmptyRedacted(config.apiKey)
+    const organization = config.organization !== undefined && config.organization.trim().length > 0
+      ? Redacted.make(config.organization)
+      : undefined
 
     const clientLayer = OpenAiClient.layer({
       ...(apiKey !== undefined ? { apiKey } : {}),

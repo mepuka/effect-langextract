@@ -1,5 +1,5 @@
-import * as BunWorkerRunner from "@effect/platform-bun/BunWorkerRunner"
 import * as WorkerRunner from "@effect/platform/WorkerRunner"
+import * as BunWorkerRunner from "@effect/platform-bun/BunWorkerRunner"
 import { Effect, Layer } from "effect"
 
 import { Resolver } from "../../Resolver.js"

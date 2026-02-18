@@ -1,7 +1,7 @@
 import { Cause, Chunk, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect"
 
 import { AlignmentExecutor } from "./AlignmentExecutor.js"
-import { TextChunk, chunkDocuments, makeBatches } from "./Chunking.js"
+import { chunkDocuments, makeBatches,TextChunk } from "./Chunking.js"
 import {
   AnnotatedDocument,
   Document,
@@ -14,8 +14,8 @@ import { LangExtractError } from "./Errors.js"
 import { FormatHandler } from "./FormatHandler.js"
 import { errorMessage } from "./internal/errorMessage.js"
 import { LanguageModel } from "./LanguageModel.js"
-import { PromptBuilder } from "./Prompting.js"
 import type { PrimedCachePolicy } from "./PrimedCache.js"
+import { PromptBuilder } from "./Prompting.js"
 import { Resolver } from "./Resolver.js"
 import { Tokenizer } from "./Tokenizer.js"
 
@@ -80,10 +80,11 @@ const encodeExtractionsForPrompt = (
   try {
     return Schema.encodeSync(JsonString)(extractions)
   } catch (error) {
-    console.warn("langextract.annotator.encode_failed", {
-      error: errorMessage(error),
-      fallback: "[]"
-    })
+    Effect.runSync(
+      Effect.logWarning("langextract.annotator.encode_failed").pipe(
+        Effect.annotateLogs({ error: errorMessage(error), fallback: "[]" })
+      )
+    )
     return "[]"
   }
 }
@@ -462,7 +463,7 @@ const annotateDocumentsImpl = (
               dependencies,
               pass.passNumber
             ).pipe(
-              Stream.mapEffect(({ documentIndex, document }) =>
+              Stream.mapEffect(({ document, documentIndex }) =>
                 Ref.modify(mergedRef, (state) => {
                   const existing = state[documentIndex]
                   if (existing === undefined) {

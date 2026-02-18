@@ -1,7 +1,6 @@
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
-
-import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 
 import { runVisualizeAdapter } from "../../src/cli/VisualizeAdapter.js"
 import {

@@ -1,17 +1,15 @@
+import * as FileSystem from "@effect/platform/FileSystem"
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import * as BunKeyValueStore from "@effect/platform-bun/BunKeyValueStore"
-import * as FileSystem from "@effect/platform/FileSystem"
-
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
 import {
+  makePrimedCacheLayer,
   PrimedCache,
   PrimedCacheKey,
   PrimedCachePolicy,
-  ScoredOutput,
-  makePrimedCacheLayer
-} from "../../src/index.js"
+  ScoredOutput} from "../../src/index.js"
 
 const tempRoot = (name: string): string =>
   `/tmp/effect-langextract-${name}-${Date.now()}-${Math.random()}`

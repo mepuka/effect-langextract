@@ -1,16 +1,14 @@
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
-
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
 import {
   LanguageModel,
+  makePrimedCacheLayer,
   OllamaConfig,
   OllamaLanguageModelLive,
   PrimedCachePolicy,
-  RuntimeControl,
-  makePrimedCacheLayer
-} from "../../src/index.js"
+  RuntimeControl} from "../../src/index.js"
 
 const liveEnabled =
   (process.env.LANGEXTRACT_LIVE_PROVIDER_SMOKE ?? "").toLowerCase() === "true" &&

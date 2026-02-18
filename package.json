@@ -1,16 +1,50 @@
 {
   "name": "effect-langextract",
-  "module": "src/index.ts",
+  "version": "0.1.0",
+  "description": "Effect-native LLM-powered structured extraction with source-grounded character spans",
+  "license": "MIT",
+  "author": "pooks",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pooks/effect-langextract.git"
+  },
+  "keywords": [
+    "effect",
+    "llm",
+    "extraction",
+    "nlp",
+    "structured-output",
+    "langextract",
+    "grounding",
+    "alignment"
+  ],
   "type": "module",
-  "private": true,
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
   "bin": {
-    "effect-langextract": "./src/main.ts"
+    "effect-langextract": "./dist/src/main.js"
+  },
+  "files": [
+    "dist/src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
     "prepare": "effect-language-service patch",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "build:visualization:bundle": "bun run scripts/visualization/build-frontend-bundle.ts",
     "check:visualization:bundle": "bun run scripts/visualization/build-frontend-bundle.ts --check",
-    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+    "lint:fix": "eslint --fix \"src/**/*.ts\" \"test/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "cli": "bun run src/main.ts",
     "cli:node": "bun run build && node dist/src/runtime/NodeMain.js",
@@ -23,25 +57,36 @@
     "test:live": "LANGEXTRACT_LIVE_PROVIDER_SMOKE=true vitest run",
     "test:smoke:providers": "LANGEXTRACT_LIVE_PROVIDER_SMOKE=true vitest run test/providers/openai.provider.test.ts test/providers/gemini.provider.test.ts test/providers/anthropic.provider.test.ts test/providers/ollama.provider.test.ts",
     "test:watch": "vitest",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "bun run build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.8",
+    "@effect-atom/atom": "^0.5.1",
+    "@effect/eslint-plugin": "^0.3.2",
     "@effect/language-service": "^0.74.0",
     "@effect/vitest": "^0.27.0",
-    "@types/bun": "latest",
+    "@types/bun": "^1.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "eslint": "^10.0.0",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-sort-destructure-keys": "^3.0.0",
+    "prettier": "^3.8.1",
     "vitest": "^3.2.4"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "@effect-atom/atom": "^0.5.1",
     "@effect/ai": "^0.33.2",
     "@effect/ai-anthropic": "^0.23.0",
     "@effect/ai-google": "^0.12.1",
     "@effect/ai-openai": "^0.37.2",
     "@effect/cli": "^0.73.2",
-    "@effect/experimental": "^0.58.0",
     "@effect/platform": "^0.94.5",
     "@effect/platform-bun": "^0.87.1",
     "@effect/platform-node-shared": "^0.57.1",

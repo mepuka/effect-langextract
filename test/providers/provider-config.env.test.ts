@@ -1,5 +1,5 @@
-import { ConfigProvider, Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { ConfigProvider, Effect, Layer, Redacted } from "effect"
 
 import {
   OllamaConfig,
@@ -19,7 +19,7 @@ describe("Provider config from Effect Config", () => {
       const config = yield* OpenAIConfig
 
       expect(config.modelId).toBe("gpt-4.1-mini")
-      expect(config.apiKey).toBe("sk-provider-key")
+      expect(Redacted.value(config.apiKey)).toBe("sk-provider-key")
       expect(config.baseUrl).toBe("https://api.openai.example")
       expect(config.providerConcurrency).toBe(5)
       expect(config.formatType).toBe("yaml")

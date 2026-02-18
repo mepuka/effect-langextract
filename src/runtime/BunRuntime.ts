@@ -1,10 +1,10 @@
+import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as HttpClient from "@effect/platform/HttpClient"
+import * as KeyValueStore from "@effect/platform/KeyValueStore"
 import * as BunContext from "@effect/platform-bun/BunContext"
 import * as BunKeyValueStore from "@effect/platform-bun/BunKeyValueStore"
 import * as BunWorkerRunner from "@effect/platform-bun/BunWorkerRunner"
-import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
-import * as HttpClient from "@effect/platform/HttpClient"
-import * as FileSystem from "@effect/platform/FileSystem"
-import * as KeyValueStore from "@effect/platform/KeyValueStore"
 import { Layer } from "effect"
 
 export const makeBunKeyValueStoreLayer = (

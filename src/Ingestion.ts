@@ -12,28 +12,26 @@ import {
   IngestionSourceError
 } from "./Errors.js"
 import {
-  decodeCsvRows,
-  decodeJsonRows,
-  decodeJsonlRows,
-  decodeTextDocument,
-  resolveEffectiveFormat
-} from "./ingestion/FormatDecoders.js"
-import {
   mapRowToDocument,
   type MapRowToDocumentOptions
 } from "./ingestion/FieldMapping.js"
 import {
-  type IngestionSource,
-  type IngestionRequest,
-  IngestionRequest as IngestionRequestSchema
-} from "./ingestion/Models.js"
+  decodeCsvRows,
+  decodeJsonlRows,
+  decodeJsonRows,
+  decodeTextDocument,
+  resolveEffectiveFormat
+} from "./ingestion/FormatDecoders.js"
 import {
+  type IngestionRequest,
+  IngestionRequest as IngestionRequestSchema,
+  type IngestionSource} from "./ingestion/Models.js"
+import {
+  type ByteSource,
   isHttpUrl,
   streamFileSource,
   streamStdinSource,
-  streamUrlSource,
-  type ByteSource
-} from "./ingestion/SourceReaders.js"
+  streamUrlSource} from "./ingestion/SourceReaders.js"
 
 export type IngestionError =
   | IngestionConfigError

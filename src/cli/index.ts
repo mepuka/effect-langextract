@@ -1,5 +1,5 @@
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
-import { Layer, Schema } from "effect"
+import { Layer, Redacted, Schema } from "effect"
 
 import { AlignmentExecutor } from "../AlignmentExecutor.js"
 import { LanguageModel } from "../LanguageModel.js"
@@ -69,12 +69,12 @@ export interface ResolvedExtractCommandConfig {
   readonly primedCacheTtlSeconds: number
   readonly primedCacheDeterministicOnly: boolean
   readonly clearPrimedCacheOnStart: boolean
-  readonly openAiApiKey: string
+  readonly openAiApiKey: Redacted.Redacted
   readonly openAiBaseUrl?: string | undefined
   readonly openAiOrganization?: string | undefined
-  readonly geminiApiKey: string
+  readonly geminiApiKey: Redacted.Redacted
   readonly geminiBaseUrl?: string | undefined
-  readonly anthropicApiKey: string
+  readonly anthropicApiKey: Redacted.Redacted
   readonly anthropicBaseUrl?: string | undefined
   readonly ollamaBaseUrl: string
 }
@@ -109,12 +109,12 @@ export interface ExecuteExtractCommandOptions {
   readonly primedCacheTtlSeconds?: number | undefined
   readonly primedCacheDeterministicOnly?: boolean | undefined
   readonly clearPrimedCacheOnStart?: boolean | undefined
-  readonly openAiApiKey?: string | undefined
+  readonly openAiApiKey?: Redacted.Redacted | undefined
   readonly openAiBaseUrl?: string | undefined
   readonly openAiOrganization?: string | undefined
-  readonly geminiApiKey?: string | undefined
+  readonly geminiApiKey?: Redacted.Redacted | undefined
   readonly geminiBaseUrl?: string | undefined
-  readonly anthropicApiKey?: string | undefined
+  readonly anthropicApiKey?: Redacted.Redacted | undefined
   readonly anthropicBaseUrl?: string | undefined
   readonly ollamaBaseUrl?: string | undefined
   readonly env?: Readonly<Record<string, string | undefined>> | undefined

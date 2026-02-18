@@ -49,19 +49,19 @@ export interface DocumentIdGeneratorService {
   readonly next: Effect.Effect<string>
 }
 
-const makeDefaultDocumentIdGenerator = (): DocumentIdGeneratorService => {
-  const sequence = Effect.runSync(Ref.make(0))
+const makeDefaultDocumentIdGenerator = Effect.gen(function* () {
+  const sequence = yield* Ref.make(0)
   return {
     next: Ref.updateAndGet(sequence, (value) => value + 1).pipe(
       Effect.map((value) => `doc_${value.toString(16).padStart(8, "0")}`)
     )
-  }
-}
+  } satisfies DocumentIdGeneratorService
+})
 
 export class DocumentIdGenerator extends Effect.Service<DocumentIdGenerator>()(
   "@effect-langextract/DocumentIdGenerator",
   {
-    sync: makeDefaultDocumentIdGenerator
+    effect: makeDefaultDocumentIdGenerator
   }
 ) {
   static readonly Test: Layer.Layer<DocumentIdGenerator> = DocumentIdGenerator.Default
@@ -69,10 +69,9 @@ export class DocumentIdGenerator extends Effect.Service<DocumentIdGenerator>()(
   static testLayer = (
     service?: DocumentIdGeneratorService
   ): Layer.Layer<DocumentIdGenerator> =>
-    Layer.succeed(
-      DocumentIdGenerator,
-      DocumentIdGenerator.make(service ?? makeDefaultDocumentIdGenerator())
-    )
+    service !== undefined
+      ? Layer.succeed(DocumentIdGenerator, DocumentIdGenerator.make(service))
+      : DocumentIdGenerator.Default
 }
 
 export const makeDocument = (args: {

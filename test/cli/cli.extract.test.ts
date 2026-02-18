@@ -1,12 +1,11 @@
-import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
-
-import { Effect } from "effect"
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 
 import { resolveExtractCommandConfig } from "../../src/Cli.js"
-import { LanguageModel } from "../../src/LanguageModel.js"
 import { runExtractAdapter } from "../../src/cli/ExtractAdapter.js"
+import { LanguageModel } from "../../src/LanguageModel.js"
 import {
   readTextFile,
   removeFile,

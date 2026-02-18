@@ -1,8 +1,8 @@
 import { Effect, Schema } from "effect"
 
 import { CharInterval, Document } from "./Data.js"
-import { TokenInterval } from "./Tokenizer.js"
 import type { TokenizerService } from "./Tokenizer.js"
+import { TokenInterval } from "./Tokenizer.js"
 
 export class TextChunk extends Schema.Class<TextChunk>("TextChunk")({
   documentIndex: Schema.Int,

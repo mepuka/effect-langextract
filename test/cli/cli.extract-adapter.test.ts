@@ -1,5 +1,5 @@
-import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 
 import { resolveIngestionRequest } from "../../src/cli/ExtractAdapter.js"
 import type { ResolvedExtractCommandConfig } from "../../src/cli/index.js"

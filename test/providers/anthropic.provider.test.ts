@@ -1,16 +1,14 @@
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
-
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer, Redacted } from "effect"
 
 import {
   AnthropicConfig,
   AnthropicLanguageModelLive,
   LanguageModel,
+  makePrimedCacheLayer,
   PrimedCachePolicy,
-  RuntimeControl,
-  makePrimedCacheLayer
-} from "../../src/index.js"
+  RuntimeControl} from "../../src/index.js"
 
 const liveEnabled =
   (process.env.LANGEXTRACT_LIVE_PROVIDER_SMOKE ?? "").toLowerCase() === "true" &&
@@ -21,7 +19,7 @@ const anthropicRuntimeLayer = Layer.provide(
   [
     AnthropicConfig.testLayer({
       modelId: process.env.ANTHROPIC_MODEL_ID ?? "claude-3-5-sonnet-latest",
-      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+      apiKey: Redacted.make(process.env.ANTHROPIC_API_KEY ?? ""),
       baseUrl: process.env.ANTHROPIC_BASE_URL,
       temperature: 0,
       providerConcurrency: 2

@@ -1,14 +1,14 @@
-import * as BunWorker from "@effect/platform-bun/BunWorker"
 import * as Worker from "@effect/platform/Worker"
+import * as BunWorker from "@effect/platform-bun/BunWorker"
 import { Context, Effect, Layer } from "effect"
 
 import {
-  AlignmentExecutor,
   type AlignChunkOptions,
+  AlignmentExecutor,
   type AlignmentExecutorService
 } from "../AlignmentExecutor.js"
-import { AlignmentError } from "../Errors.js"
 import { type Extraction } from "../Data.js"
+import { AlignmentError } from "../Errors.js"
 import { errorMessage } from "../internal/errorMessage.js"
 import {
   AlignChunkRequest,

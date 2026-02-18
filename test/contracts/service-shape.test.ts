@@ -1,5 +1,5 @@
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
 import {
   AlignmentExecutor,
@@ -13,19 +13,18 @@ import {
   GeminiConfig,
   LanguageModel,
   OllamaConfig,
+  OpenAIConfig,
   PrimedCache,
-  PrimedCacheTest,
   PrimedCacheKey,
+  PrimedCacheTest,
   PromptBuilder,
   PromptValidator,
   Resolver,
+  RuntimeControl,
   ScoredOutput,
   TokenInterval,
   Tokenizer,
-  Visualizer,
-  RuntimeControl,
-  OpenAIConfig
-} from "../../src/index.js"
+  Visualizer} from "../../src/index.js"
 
 describe("Service contracts", () => {
   it.effect("Tokenizer exposes tokenize/tokensText/findSentenceRange", () =>

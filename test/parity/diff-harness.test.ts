@@ -1,7 +1,7 @@
 import path from "node:path"
 
-import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 
 import {
   findFirstDiffPath,

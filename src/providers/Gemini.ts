@@ -13,7 +13,7 @@ import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface GeminiConfigService {
   readonly modelId: string
-  readonly apiKey: string
+  readonly apiKey: Redacted.Redacted
   readonly baseUrl?: string | undefined
   readonly temperature: number
   readonly providerConcurrency: number
@@ -27,7 +27,7 @@ export interface GeminiConfigService {
 
 const defaultGeminiConfig: GeminiConfigService = {
   modelId: "gemini-2.5-flash",
-  apiKey: "",
+  apiKey: Redacted.make(""),
   baseUrl: undefined,
   temperature: 0,
   providerConcurrency: 8,
@@ -45,7 +45,7 @@ const GeminiConfigEnv = Config.all({
   modelId: Config.string("GEMINI_MODEL_ID").pipe(
     Config.withDefault(defaultGeminiConfig.modelId)
   ),
-  apiKey: Config.string("GEMINI_API_KEY").pipe(
+  apiKey: Config.redacted("GEMINI_API_KEY").pipe(
     Config.withDefault(defaultGeminiConfig.apiKey)
   ),
   baseUrl: Config.string("GEMINI_BASE_URL").pipe(Config.option),
@@ -71,8 +71,10 @@ const GeminiConfigEnv = Config.all({
   )
 })
 
-const optionalRedacted = (value: string | undefined): Redacted.Redacted | undefined =>
-  value !== undefined && value.trim().length > 0 ? Redacted.make(value) : undefined
+const nonEmptyRedacted = (value: Redacted.Redacted): Redacted.Redacted | undefined => {
+  const raw = Redacted.value(value)
+  return raw.trim().length > 0 ? value : undefined
+}
 
 export class GeminiConfig extends Effect.Service<GeminiConfig>()(
   "@effect-langextract/providers/GeminiConfig",
@@ -130,7 +132,7 @@ export const GeminiNativeLanguageModelLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* GeminiConfig
 
-    const apiKey = optionalRedacted(config.apiKey)
+    const apiKey = nonEmptyRedacted(config.apiKey)
 
     const clientLayer = GoogleClient.layer({
       ...(apiKey !== undefined ? { apiKey } : {}),

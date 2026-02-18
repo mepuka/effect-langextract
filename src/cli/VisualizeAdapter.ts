@@ -2,10 +2,10 @@ import * as FileSystem from "@effect/platform/FileSystem"
 import { Effect } from "effect"
 import * as Console from "effect/Console"
 
+import { renderDocuments } from "../api/Render.js"
 import { decodeAnnotatedDocumentJson } from "../DataLib.js"
 import { InferenceConfigError } from "../Errors.js"
 import { readTextFile, writeTextFile } from "../IO.js"
-import { renderDocuments } from "../api/Render.js"
 import { Visualizer } from "../Visualization.js"
 
 export interface VisualizeCommandOptions {

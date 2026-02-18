@@ -1,5 +1,5 @@
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
 import {
   AlignmentError,

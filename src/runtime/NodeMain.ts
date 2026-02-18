@@ -1,10 +1,10 @@
+import * as KeyValueStore from "@effect/platform/KeyValueStore"
+import * as NodeCommandExecutor from "@effect/platform-node-shared/NodeCommandExecutor"
 import * as NodeFileSystem from "@effect/platform-node-shared/NodeFileSystem"
 import * as NodeKeyValueStore from "@effect/platform-node-shared/NodeKeyValueStore"
 import * as NodePath from "@effect/platform-node-shared/NodePath"
-import * as NodeTerminal from "@effect/platform-node-shared/NodeTerminal"
-import * as NodeCommandExecutor from "@effect/platform-node-shared/NodeCommandExecutor"
 import * as NodeRuntime from "@effect/platform-node-shared/NodeRuntime"
-import * as KeyValueStore from "@effect/platform/KeyValueStore"
+import * as NodeTerminal from "@effect/platform-node-shared/NodeTerminal"
 import { Effect, Layer } from "effect"
 
 import { runCli } from "../Cli.js"

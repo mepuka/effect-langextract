@@ -1,16 +1,14 @@
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
-
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer, Redacted } from "effect"
 
 import {
   GeminiConfig,
   GeminiLanguageModelLive,
   LanguageModel,
+  makePrimedCacheLayer,
   PrimedCachePolicy,
-  RuntimeControl,
-  makePrimedCacheLayer
-} from "../../src/index.js"
+  RuntimeControl} from "../../src/index.js"
 
 const liveEnabled =
   (process.env.LANGEXTRACT_LIVE_PROVIDER_SMOKE ?? "").toLowerCase() === "true" &&
@@ -21,7 +19,7 @@ const geminiRuntimeLayer = Layer.provide(
   [
     GeminiConfig.testLayer({
       modelId: process.env.GEMINI_MODEL_ID ?? "gemini-2.5-flash",
-      apiKey: process.env.GEMINI_API_KEY ?? "",
+      apiKey: Redacted.make(process.env.GEMINI_API_KEY ?? ""),
       baseUrl: process.env.GEMINI_BASE_URL,
       temperature: 0,
       providerConcurrency: 2

@@ -1,21 +1,18 @@
-import * as BunContext from "@effect/platform-bun/BunContext"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
 import * as FileSystem from "@effect/platform/FileSystem"
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as HttpClientResponse from "@effect/platform/HttpClientResponse"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
-
-import { Chunk, Effect, Layer, Stream } from "effect"
+import * as BunContext from "@effect/platform-bun/BunContext"
 import { describe, expect, it } from "@effect/vitest"
+import { Chunk, Effect, Layer, Redacted, Stream } from "effect"
 
-import { DocumentIdGenerator, ExampleData } from "../../src/Data.js"
-import { Ingestion } from "../../src/Ingestion.js"
-import { LanguageModel } from "../../src/LanguageModel.js"
-import { PrimedCachePolicy } from "../../src/PrimedCache.js"
-import { extract, extractStream } from "../../src/api/Extraction.js"
 import {
   makeExtractionExecutionLayer
 } from "../../src/api/ExecutionLayer.js"
+import { extract, extractStream } from "../../src/api/Extraction.js"
+import { DocumentIdGenerator, ExampleData } from "../../src/Data.js"
+import { Ingestion } from "../../src/Ingestion.js"
 import {
   DocumentMappingSpec,
   FieldSelector,
@@ -24,6 +21,8 @@ import {
   IngestionSourceText,
   IngestionSourceUrl
 } from "../../src/ingestion/Models.js"
+import { LanguageModel } from "../../src/LanguageModel.js"
+import { PrimedCachePolicy } from "../../src/PrimedCache.js"
 import { removeFile, tempPath } from "../helpers/cli.js"
 
 const mockLanguageModelLayer = LanguageModel.testLayer({
@@ -46,7 +45,7 @@ const makeExtractionLayer = () =>
     {
       provider: "openai",
       modelId: "gpt-4o-mini",
-      apiKey: "",
+      apiKey: Redacted.make(""),
       providerConcurrency: 8,
       primedCacheNamespace: "test"
     },

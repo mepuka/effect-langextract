@@ -1,8 +1,8 @@
 import { Effect, Layer } from "effect"
 
 import {
-  ATTRIBUTE_SUFFIX,
   AlignmentStatus,
+  ATTRIBUTE_SUFFIX,
   CharInterval,
   Extraction
 } from "./Data.js"

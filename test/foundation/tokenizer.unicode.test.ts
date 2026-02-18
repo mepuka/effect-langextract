@@ -1,5 +1,5 @@
-import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 
 import { Tokenizer, UnicodeTokenizerLive } from "../../src/index.js"
 

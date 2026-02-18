@@ -1,5 +1,5 @@
-import * as BunContext from "@effect/platform-bun/BunContext"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
+import * as BunContext from "@effect/platform-bun/BunContext"
 import { Effect, Layer } from "effect"
 
 import { runCli } from "../Cli.js"

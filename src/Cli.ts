@@ -1,26 +1,26 @@
 import { Command, Options } from "@effect/cli"
-import { ConfigProvider, Effect, Option } from "effect"
+import { ConfigProvider, Effect, Option, Redacted } from "effect"
 import * as Console from "effect/Console"
 
-import { ExtractionConfig } from "./ExtractionConfig.js"
-import { InferenceConfigError } from "./Errors.js"
 import { runExtractAdapter } from "./cli/ExtractAdapter.js"
-import { runVisualizeAdapter } from "./cli/VisualizeAdapter.js"
-import {
-  InputFormat,
-  OutputFormat,
-  ProviderName,
-  RowErrorMode,
-  type InputFormat as InputFormatType,
-  type OutputFormat as OutputFormatType,
-  type ProviderName as ProviderNameType,
-  type RowErrorMode as RowErrorModeType
-} from "./cli/index.js"
 import type {
   CliRuntimeOptions,
   ExecuteExtractCommandOptions,
   ResolvedExtractCommandConfig
 } from "./cli/index.js"
+import {
+  InputFormat,
+  type InputFormat as InputFormatType,
+  OutputFormat,
+  type OutputFormat as OutputFormatType,
+  ProviderName,
+  type ProviderName as ProviderNameType,
+  RowErrorMode,
+  type RowErrorMode as RowErrorModeType
+} from "./cli/index.js"
+import { runVisualizeAdapter } from "./cli/VisualizeAdapter.js"
+import { InferenceConfigError } from "./Errors.js"
+import { ExtractionConfig } from "./ExtractionConfig.js"
 import { detectProviderFromModelId } from "./providers/Patterns.js"
 
 type ConfigSource = "cli" | "env" | "default"
@@ -111,6 +111,9 @@ const resolveConfigSource = (
 const pickFirstDefined = <A>(
   ...values: ReadonlyArray<A | undefined>
 ): A | undefined => values.find((value) => value !== undefined)
+
+const redactEnv = (value: string | undefined): Redacted.Redacted | undefined =>
+  value !== undefined ? Redacted.make(value) : undefined
 
 const defaultCommandConfig = {
   prompt: "Extract structured entities.",
@@ -255,16 +258,16 @@ export const resolveExtractCommandConfig = (
       primedCacheTtlSeconds: extractedConfig.primedCacheTtlSeconds,
       primedCacheDeterministicOnly: extractedConfig.primedCacheDeterministicOnly,
       clearPrimedCacheOnStart: extractedConfig.clearPrimedCacheOnStart,
-      openAiApiKey: pickFirstDefined(options.openAiApiKey, env.OPENAI_API_KEY) ?? "",
+      openAiApiKey: pickFirstDefined(options.openAiApiKey, redactEnv(env.OPENAI_API_KEY)) ?? Redacted.make(""),
       openAiBaseUrl: pickFirstDefined(options.openAiBaseUrl, env.OPENAI_BASE_URL),
       openAiOrganization: pickFirstDefined(
         options.openAiOrganization,
         env.OPENAI_ORGANIZATION
       ),
-      geminiApiKey: pickFirstDefined(options.geminiApiKey, env.GEMINI_API_KEY) ?? "",
+      geminiApiKey: pickFirstDefined(options.geminiApiKey, redactEnv(env.GEMINI_API_KEY)) ?? Redacted.make(""),
       geminiBaseUrl: pickFirstDefined(options.geminiBaseUrl, env.GEMINI_BASE_URL),
       anthropicApiKey:
-        pickFirstDefined(options.anthropicApiKey, env.ANTHROPIC_API_KEY) ?? "",
+        pickFirstDefined(options.anthropicApiKey, redactEnv(env.ANTHROPIC_API_KEY)) ?? Redacted.make(""),
       anthropicBaseUrl: pickFirstDefined(
         options.anthropicBaseUrl,
         env.ANTHROPIC_BASE_URL

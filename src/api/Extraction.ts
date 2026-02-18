@@ -9,11 +9,11 @@ import {
   LangExtractError,
   PrimedCacheError
 } from "../Errors.js"
-import { Ingestion, ingestDocuments } from "../Ingestion.js"
-import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
+import type { IngestionError } from "../Ingestion.js"
+import { ingestDocuments,Ingestion } from "../Ingestion.js"
 import { extractDocumentsStream } from "../ingestion/ExtractDocuments.js"
 import { IngestionRequest } from "../ingestion/Models.js"
-import type { IngestionError } from "../Ingestion.js"
+import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
 
 export interface ExtractRequest {
   readonly ingestion: IngestionRequest

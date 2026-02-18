@@ -1,8 +1,8 @@
-import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 
-import { AnnotatedDocument, CharInterval, Extraction } from "../../src/Data.js"
 import { renderDocuments } from "../../src/api/Render.js"
+import { AnnotatedDocument, CharInterval, Extraction } from "../../src/Data.js"
 import { Visualizer } from "../../src/Visualization.js"
 
 const sampleDocument = new AnnotatedDocument({

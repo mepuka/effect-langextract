@@ -284,10 +284,11 @@ const encodeExtractionExample = (extractions: ReadonlyArray<Extraction>): string
   try {
     return Schema.encodeSync(JsonString)(extractions)
   } catch (error) {
-    console.warn("langextract.format.encode_failed", {
-      error: errorMessage(error),
-      fallback: "[]"
-    })
+    Effect.runSync(
+      Effect.logWarning("langextract.format.encode_failed").pipe(
+        Effect.annotateLogs({ error: errorMessage(error), fallback: "[]" })
+      )
+    )
     return "[]"
   }
 }

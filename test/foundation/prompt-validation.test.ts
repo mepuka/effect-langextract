@@ -1,13 +1,13 @@
-import { Effect, Layer } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
+import { CharInterval, ExampleData, Extraction, Resolver } from "../../src/index.js"
 import {
   AlignmentPolicy,
   PromptValidator,
   ValidationIssue,
   ValidationReport
 } from "../../src/PromptValidation.js"
-import { CharInterval, ExampleData, Extraction, Resolver } from "../../src/index.js"
 
 const makeExample = (extractionText: string): ExampleData =>
   new ExampleData({

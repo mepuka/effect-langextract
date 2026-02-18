@@ -1,12 +1,11 @@
-import * as BunContext from "@effect/platform-bun/BunContext"
-import * as FileSystem from "@effect/platform/FileSystem"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
-
-import { Chunk, Effect, Layer, Stream } from "effect"
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as BunContext from "@effect/platform-bun/BunContext"
 import { describe, expect, it } from "@effect/vitest"
+import { Chunk, Effect, Layer, Stream } from "effect"
 
 import { DocumentIdGenerator } from "../../src/Data.js"
-import { Ingestion, ingestDocuments } from "../../src/Ingestion.js"
+import { ingestDocuments,Ingestion } from "../../src/Ingestion.js"
 import {
   DocumentMappingSpec,
   FieldSelector,

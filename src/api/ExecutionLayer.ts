@@ -1,6 +1,6 @@
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
-import { ConfigProvider, Layer } from "effect"
+import { ConfigProvider, Layer, Redacted } from "effect"
 
 import { AlignmentExecutor } from "../AlignmentExecutor.js"
 import { Annotator } from "../Annotator.js"
@@ -8,18 +8,10 @@ import { DocumentIdGenerator } from "../Data.js"
 import { FormatHandler } from "../FormatHandler.js"
 import { LanguageModel } from "../LanguageModel.js"
 import {
-  PrimedCache,
-  makePrimedCacheLayer
-} from "../PrimedCache.js"
-import { PromptValidator } from "../PromptValidation.js"
+  makePrimedCacheLayer,
+  PrimedCache} from "../PrimedCache.js"
 import { PromptBuilder } from "../Prompting.js"
-import { Resolver } from "../Resolver.js"
-import {
-  RuntimeControl,
-  makeRuntimeControlPermitLayer
-} from "../RuntimeControl.js"
-import { Tokenizer } from "../Tokenizer.js"
-import { Visualizer } from "../Visualization.js"
+import { PromptValidator } from "../PromptValidation.js"
 import {
   AnthropicConfigLive,
   AnthropicLanguageModelLive
@@ -27,13 +19,19 @@ import {
 import { GeminiConfigLive, GeminiLanguageModelLive } from "../providers/Gemini.js"
 import { OllamaConfigLive, OllamaLanguageModelLive } from "../providers/Ollama.js"
 import { OpenAIConfigLive, OpenAILanguageModelLive } from "../providers/OpenAI.js"
+import { Resolver } from "../Resolver.js"
+import {
+  makeRuntimeControlPermitLayer,
+  RuntimeControl} from "../RuntimeControl.js"
+import { Tokenizer } from "../Tokenizer.js"
+import { Visualizer } from "../Visualization.js"
 
 export type ProviderRuntimeConfig =
   | {
       readonly provider: "gemini"
       readonly modelId: string
       readonly temperature?: number | undefined
-      readonly apiKey: string
+      readonly apiKey: Redacted.Redacted
       readonly baseUrl?: string | undefined
       readonly providerConcurrency: number
       readonly primedCacheNamespace: string
@@ -42,7 +40,7 @@ export type ProviderRuntimeConfig =
       readonly provider: "openai"
       readonly modelId: string
       readonly temperature?: number | undefined
-      readonly apiKey: string
+      readonly apiKey: Redacted.Redacted
       readonly baseUrl?: string | undefined
       readonly organization?: string | undefined
       readonly providerConcurrency: number
@@ -52,7 +50,7 @@ export type ProviderRuntimeConfig =
       readonly provider: "anthropic"
       readonly modelId: string
       readonly temperature?: number | undefined
-      readonly apiKey: string
+      readonly apiKey: Redacted.Redacted
       readonly baseUrl?: string | undefined
       readonly providerConcurrency: number
       readonly primedCacheNamespace: string
@@ -75,12 +73,12 @@ export interface ExecutionLayerOverrides {
 }
 
 const makeProviderConfigLayer = (
-  entries: ReadonlyArray<readonly [string, string | number | boolean | undefined]>
+  entries: ReadonlyArray<readonly [string, string | number | boolean | Redacted.Redacted | undefined]>
 ): Layer.Layer<never> => {
   const map = new Map<string, string>()
   for (const [key, value] of entries) {
     if (value !== undefined) {
-      map.set(key, String(value))
+      map.set(key, Redacted.isRedacted(value) ? Redacted.value(value) : String(value))
     }
   }
   return Layer.setConfigProvider(ConfigProvider.fromMap(map))

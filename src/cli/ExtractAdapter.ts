@@ -3,17 +3,16 @@ import * as HttpClient from "@effect/platform/HttpClient"
 import { Effect, Layer, Schema, Stream } from "effect"
 import * as Console from "effect/Console"
 
-import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "../Data.js"
-import { encodeAnnotatedDocumentJson } from "../DataLib.js"
-import { InferenceConfigError } from "../Errors.js"
-import { readTextFile, writeTextFile } from "../IO.js"
-import { Ingestion } from "../Ingestion.js"
-import { PrimedCachePolicy } from "../PrimedCache.js"
-import { extract, extractStream } from "../api/Extraction.js"
+import type { ProviderRuntimeConfig } from "../api/ExecutionLayer.js"
 import {
   makeExtractionExecutionLayer
 } from "../api/ExecutionLayer.js"
+import { extract, extractStream } from "../api/Extraction.js"
 import { renderDocuments } from "../api/Render.js"
+import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "../Data.js"
+import { encodeAnnotatedDocumentJson } from "../DataLib.js"
+import { InferenceConfigError } from "../Errors.js"
+import { Ingestion } from "../Ingestion.js"
 import {
   AdditionalContextMapping,
   CsvIngestionOptions,
@@ -26,11 +25,12 @@ import {
   IngestionSourceUrl
 } from "../ingestion/Models.js"
 import { isHttpUrl } from "../ingestion/SourceReaders.js"
+import { readTextFile, writeTextFile } from "../IO.js"
+import { PrimedCachePolicy } from "../PrimedCache.js"
 import {
   type CliRuntimeOptions,
   type ResolvedExtractCommandConfig
 } from "./index.js"
-import type { ProviderRuntimeConfig } from "../api/ExecutionLayer.js"
 
 const ExamplesJson = Schema.parseJson(Schema.Array(ExampleData))
 

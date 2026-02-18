@@ -1,7 +1,7 @@
 import { Chunk, Effect, Stream } from "effect"
 
-import { Annotator, type AnnotateOptions } from "../Annotator.js"
-import { type Document, type AnnotatedDocument } from "../Data.js"
+import { type AnnotateOptions,Annotator } from "../Annotator.js"
+import { type AnnotatedDocument,type Document } from "../Data.js"
 import { LangExtractError } from "../Errors.js"
 
 export interface ExtractDocumentsOptions extends AnnotateOptions {

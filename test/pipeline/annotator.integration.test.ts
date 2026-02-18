@@ -1,5 +1,5 @@
-import { Chunk, Clock, Effect, Layer, Stream } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Chunk, Clock, Effect, Layer, Stream } from "effect"
 
 import {
   AlignmentExecutor,

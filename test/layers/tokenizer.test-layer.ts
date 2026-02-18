@@ -1,7 +1,7 @@
 import { Layer } from "effect"
 
-import { Tokenizer } from "../../src/Tokenizer.js"
 import type { TokenizerService } from "../../src/Tokenizer.js"
+import { Tokenizer } from "../../src/Tokenizer.js"
 
 export const makeTokenizerTestLayer = (
   service: TokenizerService

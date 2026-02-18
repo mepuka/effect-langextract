@@ -27,10 +27,11 @@ const encodeExampleExtractions = (example: ExampleData): string => {
   try {
     return Schema.encodeSync(JsonString)(example.extractions)
   } catch (error) {
-    console.warn("langextract.prompting.encode_failed", {
-      error: errorMessage(error),
-      fallback: "[]"
-    })
+    Effect.runSync(
+      Effect.logWarning("langextract.prompting.encode_failed").pipe(
+        Effect.annotateLogs({ error: errorMessage(error), fallback: "[]" })
+      )
+    )
     return "[]"
   }
 }

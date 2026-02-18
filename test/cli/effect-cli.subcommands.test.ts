@@ -1,9 +1,8 @@
-import * as BunContext from "@effect/platform-bun/BunContext"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
-
-import { Effect, Layer } from "effect"
+import * as BunContext from "@effect/platform-bun/BunContext"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
 
 import { runCli } from "../../src/Cli.js"
 import { LanguageModel } from "../../src/LanguageModel.js"

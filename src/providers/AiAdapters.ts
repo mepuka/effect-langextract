@@ -1,11 +1,11 @@
 import * as NativeLanguageModel from "@effect/ai/LanguageModel"
 import { Clock, Effect, Schema, Stream } from "effect"
 
-import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { InferenceRuntimeError } from "../Errors.js"
 import { ScoredOutput } from "../FormatType.js"
 import { errorMessage } from "../internal/errorMessage.js"
 import { fnv1aHash } from "../internal/hash.js"
+import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
 import { PrimedCache, PrimedCacheKey } from "../PrimedCache.js"
 import { FormatModeSchema, type ProviderSchema } from "../ProviderSchema.js"
 import { RuntimeControl, withProviderPermitStream } from "../RuntimeControl.js"

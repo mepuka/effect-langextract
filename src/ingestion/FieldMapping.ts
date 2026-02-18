@@ -8,11 +8,10 @@ import {
   defaultIdCandidates,
   defaultTextCandidates,
   DocumentLike,
+  type DocumentMappingSpec,
   FieldSelector,
   type IngestionRow,
-  type MappingDefaults,
-  type DocumentMappingSpec
-} from "./Models.js"
+  type MappingDefaults} from "./Models.js"
 
 export interface MapRowToDocumentOptions {
   readonly mapping?: DocumentMappingSpec | undefined

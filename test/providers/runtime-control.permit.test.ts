@@ -1,13 +1,12 @@
 import * as NativeLanguageModel from "@effect/ai/LanguageModel"
-import { Chunk, Effect, Fiber, Ref, Stream } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Chunk, Effect, Fiber, Ref, Stream } from "effect"
 
 import {
-  PrimedCache,
-  RuntimeControl,
   makePrimedCacheLayer,
-  makeRuntimeControlPermitLayer
-} from "../../src/index.js"
+  makeRuntimeControlPermitLayer,
+  PrimedCache,
+  RuntimeControl} from "../../src/index.js"
 import { makeProviderLanguageModelService } from "../../src/providers/AiAdapters.js"
 
 const makeConcurrencyTrackedNativeModel = (

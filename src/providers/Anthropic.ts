@@ -13,7 +13,7 @@ import { makeProviderLanguageModelService } from "./AiAdapters.js"
 
 export interface AnthropicConfigService {
   readonly modelId: string
-  readonly apiKey: string
+  readonly apiKey: Redacted.Redacted
   readonly baseUrl?: string | undefined
   readonly temperature?: number | undefined
   readonly providerConcurrency: number
@@ -24,7 +24,7 @@ export interface AnthropicConfigService {
 
 const defaultAnthropicConfig: AnthropicConfigService = {
   modelId: "claude-3-5-sonnet-latest",
-  apiKey: "",
+  apiKey: Redacted.make(""),
   baseUrl: undefined,
   temperature: undefined,
   providerConcurrency: 8,
@@ -39,7 +39,7 @@ const AnthropicConfigEnv = Config.all({
   modelId: Config.string("ANTHROPIC_MODEL_ID").pipe(
     Config.withDefault(defaultAnthropicConfig.modelId)
   ),
-  apiKey: Config.string("ANTHROPIC_API_KEY").pipe(
+  apiKey: Config.redacted("ANTHROPIC_API_KEY").pipe(
     Config.withDefault(defaultAnthropicConfig.apiKey)
   ),
   baseUrl: Config.string("ANTHROPIC_BASE_URL").pipe(Config.option),
@@ -58,8 +58,10 @@ const AnthropicConfigEnv = Config.all({
   )
 })
 
-const optionalRedacted = (value: string | undefined): Redacted.Redacted | undefined =>
-  value !== undefined && value.trim().length > 0 ? Redacted.make(value) : undefined
+const nonEmptyRedacted = (value: Redacted.Redacted): Redacted.Redacted | undefined => {
+  const raw = Redacted.value(value)
+  return raw.trim().length > 0 ? value : undefined
+}
 
 export class AnthropicConfig extends Effect.Service<AnthropicConfig>()(
   "@effect-langextract/providers/AnthropicConfig",
@@ -115,7 +117,7 @@ export const AnthropicNativeLanguageModelLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* AnthropicConfig
 
-    const apiKey = optionalRedacted(config.apiKey)
+    const apiKey = nonEmptyRedacted(config.apiKey)
 
     const clientLayer = AnthropicClient.layer({
       ...(apiKey !== undefined ? { apiKey } : {}),
