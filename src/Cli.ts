@@ -2,7 +2,7 @@ import { Command, Options } from "@effect/cli"
 import * as HttpClient from "@effect/platform/HttpClient"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
 import * as FileSystem from "@effect/platform/FileSystem"
-import { ConfigProvider, Effect, Layer, Option, Schema } from "effect"
+import { Chunk, ConfigProvider, Effect, Layer, Option, Schema, Stream } from "effect"
 import * as Console from "effect/Console"
 
 import { AlignmentExecutor } from "./AlignmentExecutor.js"
@@ -10,12 +10,14 @@ import { Annotator } from "./Annotator.js"
 import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "./Data.js"
 import { decodeAnnotatedDocumentJson, encodeAnnotatedDocumentJson } from "./DataLib.js"
 import { InferenceConfigError } from "./Errors.js"
-import { ExtractionConfig, extract } from "./Extract.js"
+import { ExtractionConfig } from "./Extract.js"
 import { FormatHandler } from "./FormatHandler.js"
-import { readTextFile, writeJsonl, writeTextFile } from "./IO.js"
+import { readTextFile, writeTextFile } from "./IO.js"
+import { Ingestion, ingestDocuments } from "./Ingestion.js"
 import { LanguageModel } from "./LanguageModel.js"
 import {
   PrimedCache,
+  PrimedCachePolicy,
   makePrimedCacheLayer
 } from "./PrimedCache.js"
 import { PromptValidator } from "./PromptValidation.js"
@@ -27,6 +29,18 @@ import {
 } from "./RuntimeControl.js"
 import { Tokenizer } from "./Tokenizer.js"
 import { Visualizer } from "./Visualization.js"
+import { extractDocumentsStream } from "./ingestion/ExtractDocuments.js"
+import {
+  AdditionalContextMapping,
+  CsvIngestionOptions,
+  DocumentMappingSpec,
+  FieldSelector,
+  IngestionRequest,
+  IngestionSourceFile,
+  IngestionSourceStdin,
+  IngestionSourceText,
+  IngestionSourceUrl
+} from "./ingestion/Models.js"
 import {
   AnthropicConfigLive,
   AnthropicLanguageModelLive
@@ -47,12 +61,32 @@ export type ProviderName = typeof ProviderName.Type
 export const OutputFormat = Schema.Literal("json", "jsonl", "html")
 export type OutputFormat = typeof OutputFormat.Type
 
+export const InputFormat = Schema.Literal(
+  "auto",
+  "text",
+  "json",
+  "jsonl",
+  "csv",
+  "url",
+  "stdin"
+)
+export type InputFormat = typeof InputFormat.Type
+
+const CliRowErrorMode = Schema.Literal("fail-fast", "skip-row")
+type CliRowErrorMode = typeof CliRowErrorMode.Type
+
 type ConfigSource = "cli" | "env" | "default"
 
 export interface ExecuteExtractCommandOptions {
-  text?: string | undefined
-  file?: string | undefined
-  url?: string | undefined
+  input?: string | undefined
+  inputFormat?: InputFormat | undefined
+  textField?: string | undefined
+  idField?: string | undefined
+  contextField?: ReadonlyArray<string> | undefined
+  csvDelimiter?: string | undefined
+  csvHeader?: boolean | undefined
+  rowErrorMode?: CliRowErrorMode | undefined
+  documentBatchSize?: number | undefined
   prompt?: string | undefined
   examplesFile?: string | undefined
   provider?: ProviderName | undefined
@@ -106,10 +140,21 @@ export interface ExecuteVisualizeCommandOptions {
   readonly showLegend?: boolean | undefined
 }
 
+export interface ExecuteExtractCommandResult {
+  readonly documents: ReadonlyArray<AnnotatedDocument>
+  readonly renderedOutput: string
+}
+
 export interface ResolvedExtractCommandConfig {
-  readonly text?: string | undefined
-  readonly file?: string | undefined
-  readonly url?: string | undefined
+  readonly input?: string | undefined
+  readonly inputFormat: InputFormat
+  readonly textField?: string | undefined
+  readonly idField?: string | undefined
+  readonly contextField: ReadonlyArray<string>
+  readonly csvDelimiter?: string | undefined
+  readonly csvHeader?: boolean | undefined
+  readonly rowErrorMode: CliRowErrorMode
+  readonly documentBatchSize: number
   readonly prompt: string
   readonly examplesFile: string
   readonly provider: ProviderName
@@ -174,6 +219,38 @@ const parseOutput = (value: string | undefined): OutputFormat | undefined => {
   return undefined
 }
 
+const parseInputFormat = (value: string | undefined): InputFormat | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+
+  const lowered = value.trim().toLowerCase()
+  if (
+    lowered === "auto" ||
+    lowered === "text" ||
+    lowered === "json" ||
+    lowered === "jsonl" ||
+    lowered === "csv" ||
+    lowered === "url" ||
+    lowered === "stdin"
+  ) {
+    return lowered
+  }
+  return undefined
+}
+
+const parseRowErrorMode = (value: string | undefined): CliRowErrorMode | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+
+  const lowered = value.trim().toLowerCase()
+  if (lowered === "fail-fast" || lowered === "skip-row") {
+    return lowered
+  }
+  return undefined
+}
+
 const resolveConfigSource = (
   cliValue: unknown,
   envValue: unknown
@@ -195,6 +272,9 @@ const defaultCommandConfig = {
   prompt: "Extract structured entities.",
   examplesFile: "examples.json",
   output: "json" as const,
+  inputFormat: "auto" as const,
+  rowErrorMode: "fail-fast" as const,
+  documentBatchSize: 100,
   ollamaBaseUrl: "http://localhost:11434"
 }
 
@@ -286,9 +366,23 @@ export const resolveExtractCommandConfig = (
       detectProviderFromModelId(extractedConfig.modelId)
 
     return {
-      text: options.text,
-      file: options.file,
-      url: options.url,
+      input: options.input,
+      inputFormat:
+        pickFirstDefined(
+          options.inputFormat,
+          parseInputFormat(env.LANGEXTRACT_INPUT_FORMAT)
+        ) ?? defaultCommandConfig.inputFormat,
+      textField: options.textField,
+      idField: options.idField,
+      contextField: options.contextField ?? [],
+      csvDelimiter: options.csvDelimiter,
+      csvHeader: options.csvHeader,
+      rowErrorMode:
+        pickFirstDefined(
+          options.rowErrorMode,
+          parseRowErrorMode(env.LANGEXTRACT_ROW_ERROR_MODE)
+        ) ?? defaultCommandConfig.rowErrorMode,
+      documentBatchSize: options.documentBatchSize ?? defaultCommandConfig.documentBatchSize,
       prompt:
         pickFirstDefined(options.prompt, env.PROMPT_DESCRIPTION) ??
         defaultCommandConfig.prompt,
@@ -365,42 +459,154 @@ const readExamples = (
     Effect.flatMap((raw) => decodeExamples(raw, examplesPath))
   )
 
-const resolveInputText = (
-  config: ResolvedExtractCommandConfig
-): Effect.Effect<
-  { readonly text: string; readonly fetchUrls: boolean },
-  InferenceConfigError,
-  FileSystem.FileSystem
-> => {
-  const sources = [config.text, config.file, config.url].filter(
-    (value): value is string => value !== undefined
-  )
+const isHttpUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+  } catch {
+    return false
+  }
+}
 
-  if (sources.length !== 1) {
+const buildDocumentMapping = (
+  config: ResolvedExtractCommandConfig
+): DocumentMappingSpec | undefined => {
+  const hasAnyFieldMapping =
+    config.textField !== undefined ||
+    config.idField !== undefined ||
+    config.contextField.length > 0
+
+  if (!hasAnyFieldMapping) {
+    return undefined
+  }
+
+  const contextFields = config.contextField
+    .map((field) => field.trim())
+    .filter((field) => field.length > 0)
+
+  return new DocumentMappingSpec({
+    ...(config.textField !== undefined
+      ? {
+          text: new FieldSelector({
+            path: config.textField,
+            required: true,
+            trim: true
+          })
+        }
+      : {}),
+    ...(config.idField !== undefined
+      ? {
+          documentId: new FieldSelector({
+            path: config.idField,
+            required: false,
+            trim: true
+          })
+        }
+      : {}),
+    ...(contextFields.length === 1 && contextFields[0] !== undefined
+      ? {
+          additionalContext: new FieldSelector({
+            path: contextFields[0],
+            required: false,
+            trim: true
+          })
+        }
+      : contextFields.length > 1
+        ? {
+            additionalContext: new AdditionalContextMapping({
+              fields: contextFields.map(
+                (path) =>
+                  new FieldSelector({
+                    path,
+                    required: false,
+                    trim: true
+                  })
+              ),
+              includeFieldNames: true,
+              joinWith: "\n"
+            })
+          }
+        : {})
+  })
+}
+
+const resolveIngestionRequest = (
+  config: ResolvedExtractCommandConfig
+): Effect.Effect<IngestionRequest, InferenceConfigError> => {
+  if (config.input === undefined || config.input.trim().length === 0) {
     return Effect.fail(
       new InferenceConfigError({
-        message: "Provide one input source via text, file, or url."
+        message: "Extract command requires --input."
       })
     )
   }
 
-  if (config.text !== undefined) {
-    return Effect.succeed({ text: config.text, fetchUrls: false })
-  }
+  const input = config.input.trim()
+  const mapping = buildDocumentMapping(config)
 
-  if (config.file !== undefined) {
-    return readTextFile(config.file).pipe(
-      Effect.map((text) => ({ text, fetchUrls: false })),
-      Effect.mapError(
-        (error) =>
-          new InferenceConfigError({
-            message: error.message
-          })
-      )
+  if (config.inputFormat === "text") {
+    return Effect.succeed(
+      new IngestionRequest({
+        source: new IngestionSourceText({ _tag: "text", text: input }),
+        format: "text",
+        ...(mapping !== undefined ? { mapping } : {}),
+        onRowError: config.rowErrorMode
+      })
     )
   }
 
-  return Effect.succeed({ text: config.url ?? "", fetchUrls: true })
+  if (config.inputFormat === "url") {
+    if (!isHttpUrl(input)) {
+      return Effect.fail(
+        new InferenceConfigError({
+          message: "--input-format url requires an http/https URL in --input."
+        })
+      )
+    }
+
+    return Effect.succeed(
+      new IngestionRequest({
+        source: new IngestionSourceUrl({ _tag: "url", url: input }),
+        format: "text",
+        ...(mapping !== undefined ? { mapping } : {}),
+        onRowError: config.rowErrorMode
+      })
+    )
+  }
+
+  const source =
+    config.inputFormat === "stdin" || input === "-"
+      ? new IngestionSourceStdin({ _tag: "stdin" })
+      : isHttpUrl(input)
+        ? new IngestionSourceUrl({ _tag: "url", url: input })
+        : new IngestionSourceFile({ _tag: "file", path: input })
+
+  const format =
+    config.inputFormat === "stdin" ||
+    config.inputFormat === "auto"
+      ? "auto"
+      : config.inputFormat
+
+  return Effect.succeed(
+    new IngestionRequest({
+      source,
+      format,
+      ...(mapping !== undefined ? { mapping } : {}),
+      ...(config.csvDelimiter !== undefined || config.csvHeader !== undefined
+        ? {
+            csv: new CsvIngestionOptions({
+              ...(config.csvDelimiter !== undefined
+                ? { delimiter: config.csvDelimiter }
+                : {}),
+              ...(config.csvHeader !== undefined
+                ? { hasHeader: config.csvHeader }
+                : {})
+            })
+          }
+        : {}),
+      onRowError: config.rowErrorMode
+    })
+  )
 }
 
 const makeProviderLayer = (
@@ -555,43 +761,97 @@ const makeExecutionLayer = (
   )
 }
 
-const writeOutput = (
-  config: ResolvedExtractCommandConfig,
-  documentJson: string,
-  visualizedHtml: string,
-  extractions: ReadonlyArray<unknown>
-): Effect.Effect<void, InferenceConfigError, FileSystem.FileSystem> => {
-  if (config.outputPath === undefined) {
-    return Effect.void
-  }
+const AnnotatedDocumentsJson = Schema.parseJson(Schema.Array(AnnotatedDocument))
 
-  if (config.output === "json") {
-    return writeTextFile(config.outputPath, documentJson).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceConfigError({
-            message: error.message
-          })
-      )
-    )
-  }
-
-  if (config.output === "jsonl") {
-    return writeJsonl(config.outputPath, extractions).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceConfigError({
-            message: error.message
-          })
-      )
-    )
-  }
-
-  return writeTextFile(config.outputPath, visualizedHtml).pipe(
+const encodeAnnotatedDocumentsJson = (
+  documents: ReadonlyArray<AnnotatedDocument>
+): Effect.Effect<string, InferenceConfigError> =>
+  Schema.encode(AnnotatedDocumentsJson)(documents).pipe(
     Effect.mapError(
       (error) =>
         new InferenceConfigError({
-          message: error.message
+          message: `Failed to encode annotated documents JSON: ${String(error)}`
+        })
+    )
+  )
+
+const encodeAnnotatedDocumentsJsonl = (
+  documents: ReadonlyArray<AnnotatedDocument>
+): Effect.Effect<string, InferenceConfigError> =>
+  Effect.forEach(documents, (document) => encodeAnnotatedDocumentJson(document)).pipe(
+    Effect.map((rows) => `${rows.join("\n")}\n`),
+    Effect.mapError(
+      (error) =>
+        error instanceof InferenceConfigError
+          ? error
+          : new InferenceConfigError({
+              message: `Failed to encode annotated documents JSONL: ${String(error)}`
+            })
+    )
+  )
+
+const renderExtractOutput = (
+  config: ResolvedExtractCommandConfig,
+  documents: ReadonlyArray<AnnotatedDocument>,
+  executionLayer: Layer.Layer<
+    Annotator | PromptValidator | PrimedCache | Visualizer,
+    never,
+    HttpClient.HttpClient
+  >
+): Effect.Effect<string, InferenceConfigError, HttpClient.HttpClient> => {
+  if (config.output === "json") {
+    if (documents.length === 1) {
+      const firstDocument = documents[0]
+      if (firstDocument === undefined) {
+        return Effect.fail(
+          new InferenceConfigError({
+            message: "Expected a single annotated document."
+          })
+        )
+      }
+
+      return encodeAnnotatedDocumentJson(firstDocument).pipe(
+        Effect.mapError(
+          (error) =>
+            new InferenceConfigError({
+              message: `Failed to encode annotated document JSON: ${String(error)}`
+            })
+        )
+      )
+    }
+    return encodeAnnotatedDocumentsJson(documents)
+  }
+
+  if (config.output === "jsonl") {
+    return encodeAnnotatedDocumentsJsonl(documents)
+  }
+
+  if (documents.length !== 1) {
+    return Effect.fail(
+      new InferenceConfigError({
+        message: "HTML output is only supported for single-document ingestion."
+      })
+    )
+  }
+
+  const firstDocument = documents[0]
+  if (firstDocument === undefined) {
+    return Effect.fail(
+      new InferenceConfigError({
+        message: "Expected a single annotated document."
+      })
+    )
+  }
+
+  return Effect.gen(function* () {
+    const visualizer = yield* Visualizer
+    return yield* visualizer.visualize(firstDocument)
+  }).pipe(
+    Effect.provide(executionLayer),
+    Effect.mapError(
+      (error) =>
+        new InferenceConfigError({
+          message: `Failed to build visualization output: ${String(error)}`
         })
     )
   )
@@ -600,7 +860,7 @@ const writeOutput = (
 export const executeExtractCommand = (
   options: ExecuteExtractCommandOptions
 ): Effect.Effect<
-  AnnotatedDocument,
+  ExecuteExtractCommandResult,
   InferenceConfigError,
   FileSystem.FileSystem | HttpClient.HttpClient
 > =>
@@ -631,19 +891,39 @@ export const executeExtractCommand = (
       })
     )
 
-    const input = yield* resolveInputText(config)
+    const ingestionRequest = yield* resolveIngestionRequest(config)
     const examples = yield* readExamples(config.examplesFile)
+    if (examples.length === 0) {
+      return yield* new InferenceConfigError({
+        message: "Examples are required for reliable extraction."
+      })
+    }
     const executionLayer = makeExecutionLayer(
       config,
       options.primedCacheStoreLayer,
       options.languageModelLayer,
       options.alignmentExecutorLayer
     )
+    const ingestionLayer = Ingestion.Default
 
-    const annotated = yield* extract({
-      text: input.text,
-      promptDescription: config.prompt,
-      examples,
+    if (config.clearPrimedCacheOnStart) {
+      yield* Effect.gen(function* () {
+        const primedCache = yield* PrimedCache
+        yield* primedCache.clearNamespace(config.primedCacheNamespace)
+      }).pipe(
+        Effect.provide(executionLayer),
+        Effect.mapError(
+          (error) =>
+            new InferenceConfigError({
+              message: `Failed to clear primed cache namespace: ${String(error)}`
+            })
+        )
+      )
+    }
+
+    const documentsStream = ingestDocuments(ingestionRequest)
+
+    const annotatedDocuments = yield* extractDocumentsStream(documentsStream, {
       maxCharBuffer: config.maxCharBuffer,
       batchLength: config.batchLength,
       batchConcurrency: config.batchConcurrency,
@@ -655,54 +935,60 @@ export const executeExtractCommand = (
       ...(config.maxBatchInputTokens !== undefined
         ? { maxBatchInputTokens: config.maxBatchInputTokens }
         : {}),
-      primedCacheEnabled: config.primedCacheEnabled,
-      primedCacheNamespace: config.primedCacheNamespace,
-      primedCacheTtlSeconds: config.primedCacheTtlSeconds,
-      primedCacheDeterministicOnly: config.primedCacheDeterministicOnly,
-      clearPrimedCacheOnStart: config.clearPrimedCacheOnStart,
-      fetchUrls: input.fetchUrls
+      promptDescription: config.prompt,
+      promptExamples: examples,
+      cachePolicy: new PrimedCachePolicy({
+        enabled: config.primedCacheEnabled,
+        namespace: config.primedCacheNamespace,
+        ttlSeconds: config.primedCacheTtlSeconds,
+        deterministicOnly: config.primedCacheDeterministicOnly
+      }),
+      documentBatchSize: config.documentBatchSize
     }).pipe(
+      Stream.runCollect,
+      Effect.map((values) => Chunk.toReadonlyArray(values)),
       Effect.mapError(
         (error) =>
           new InferenceConfigError({
             message: error.message
           })
       ),
-      Effect.provide(executionLayer)
-    )
-
-    const documentJson = yield* encodeAnnotatedDocumentJson(annotated).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceConfigError({
-            message: `Failed to encode extraction output: ${String(error)}`
-          })
+      Effect.provide(
+        Layer.mergeAll(
+          executionLayer,
+          ingestionLayer,
+          DocumentIdGenerator.Default
+        )
       )
     )
 
-    const html = yield* Effect.gen(function* () {
-      const visualizer = yield* Visualizer
-      return yield* visualizer.visualize(annotated)
-    }).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceConfigError({
-            message: `Failed to build visualization output: ${String(error)}`
-          })
-      ),
-      Effect.provide(executionLayer)
+    if (annotatedDocuments.length === 0) {
+      return yield* new InferenceConfigError({
+        message: "Ingestion produced zero documents."
+      })
+    }
+
+    const outputText = yield* renderExtractOutput(
+      config,
+      annotatedDocuments,
+      executionLayer
     )
 
-    yield* writeOutput(config, documentJson, html, annotated.extractions)
-
-    return yield* decodeAnnotatedDocumentJson(documentJson).pipe(
-      Effect.mapError(
-        (error) =>
-          new InferenceConfigError({
-            message: `Failed to decode extraction output: ${String(error)}`
-          })
+    if (config.outputPath !== undefined) {
+      yield* writeTextFile(config.outputPath, outputText).pipe(
+        Effect.mapError(
+          (error) =>
+            new InferenceConfigError({
+              message: error.message
+            })
+        )
       )
-    )
+    }
+
+    return {
+      documents: annotatedDocuments,
+      renderedOutput: outputText
+    }
   })
 
 export const executeVisualizeCommand = (
@@ -779,6 +1065,15 @@ const optionalTextOption = (
     description
   )
 
+const repeatedTextOption = (
+  name: string,
+  description: string
+): Options.Options<ReadonlyArray<string>> =>
+  Options.withDescription(
+    Options.withDefault(Options.repeated(Options.text(name)), []),
+    description
+  )
+
 const optionalIntegerOption = (
   name: string,
   description: string
@@ -835,10 +1130,63 @@ const optionalOutputOption: Options.Options<OutputFormat | undefined> =
     "Output format."
   )
 
+const optionalInputFormatOption: Options.Options<InputFormat | undefined> =
+  Options.withDescription(
+    Options.withDefault(
+      Options.choice("input-format", [
+        "auto",
+        "text",
+        "json",
+        "jsonl",
+        "csv",
+        "url",
+        "stdin"
+      ] as const),
+      undefined
+    ),
+    "Input source/format mode."
+  )
+
+const optionalRowErrorModeOption: Options.Options<CliRowErrorMode | undefined> =
+  Options.withDescription(
+    Options.withDefault(
+      Options.choice("row-error-mode", ["fail-fast", "skip-row"] as const),
+      undefined
+    ),
+    "Structured-row handling mode."
+  )
+
 const extractCliConfig = {
-  text: optionalTextOption("text", "Inline text input."),
-  file: optionalTextOption("file", "Path to text input file."),
-  url: optionalTextOption("url", "URL input."),
+  input: optionalTextOption(
+    "input",
+    "Unified input value (path, URL, '-', or inline text when --input-format text)."
+  ),
+  inputFormat: optionalInputFormatOption,
+  textField: optionalTextOption(
+    "text-field",
+    "Structured row field/path mapped to Document.text."
+  ),
+  idField: optionalTextOption(
+    "id-field",
+    "Structured row field/path mapped to Document.documentId."
+  ),
+  contextField: repeatedTextOption(
+    "context-field",
+    "Repeatable structured row field/path mapped to Document.additionalContext."
+  ),
+  csvDelimiter: optionalTextOption(
+    "csv-delimiter",
+    "CSV delimiter character (defaults to ',')."
+  ),
+  csvHeader: optionalBooleanOption(
+    "csv-header",
+    "Whether CSV has a header row (true|false)."
+  ),
+  rowErrorMode: optionalRowErrorModeOption,
+  documentBatchSize: optionalIntegerOption(
+    "document-batch-size",
+    "Number of documents grouped per annotation call."
+  ),
   prompt: optionalTextOption("prompt", "Prompt description."),
   examplesFile: optionalTextOption(
     "examples-file",
@@ -938,20 +1286,12 @@ const runExtractFromCli = (
     languageModelLayer: runtime.languageModelLayer,
     alignmentExecutorLayer: runtime.alignmentExecutorLayer
   }).pipe(
-    Effect.flatMap((annotated) => {
+    Effect.flatMap((result) => {
       if (runtime.emitResultToStdout === false || config.outputPath !== undefined) {
         return Effect.void
       }
 
-      return encodeAnnotatedDocumentJson(annotated).pipe(
-        Effect.mapError(
-          (error) =>
-            new InferenceConfigError({
-              message: `Failed to encode extraction output: ${String(error)}`
-            })
-        ),
-        Effect.flatMap((json) => Console.log(json))
-      )
+      return Console.log(result.renderedOutput)
     })
   )
 
@@ -980,7 +1320,11 @@ export const makeExtractCommand = (
     "extract",
     extractCliConfig,
     (config) => runExtractFromCli(config, runtime)
-  ).pipe(Command.withDescription("Extract structured data from text, files, or URLs."))
+  ).pipe(
+    Command.withDescription(
+      "Extract structured data from unified ingestion inputs."
+    )
+  )
 
 export const makeVisualizeCommand = (
   runtime: CliRuntimeOptions = {}

@@ -171,6 +171,74 @@ export class IoError extends Schema.TaggedError<IoError>()(
   }
 ) {}
 
+export class IngestionConfigError extends Schema.TaggedError<IngestionConfigError>()(
+  "IngestionConfigError",
+  {
+    message: Schema.String
+  }
+) {}
+
+export class IngestionSourceError extends Schema.TaggedError<IngestionSourceError>()(
+  "IngestionSourceError",
+  {
+    message: Schema.String,
+    sourceTag: Schema.optionalWith(Schema.Literal("text", "file", "url", "stdin"), {
+      exact: true
+    }),
+    sourceRef: Schema.optionalWith(Schema.String, { exact: true })
+  }
+) {}
+
+export class IngestionFormatError extends Schema.TaggedError<IngestionFormatError>()(
+  "IngestionFormatError",
+  {
+    message: Schema.String,
+    format: Schema.optionalWith(Schema.String, { exact: true }),
+    sourceTag: Schema.optionalWith(Schema.Literal("text", "file", "url", "stdin"), {
+      exact: true
+    }),
+    sourceRef: Schema.optionalWith(Schema.String, { exact: true })
+  }
+) {}
+
+export class IngestionDecodeError extends Schema.TaggedError<IngestionDecodeError>()(
+  "IngestionDecodeError",
+  {
+    message: Schema.String,
+    format: Schema.optionalWith(Schema.String, { exact: true }),
+    sourceTag: Schema.optionalWith(Schema.Literal("text", "file", "url", "stdin"), {
+      exact: true
+    }),
+    sourceRef: Schema.optionalWith(Schema.String, { exact: true }),
+    rowIndex: Schema.optionalWith(Schema.Int, { exact: true }),
+    lineNumber: Schema.optionalWith(Schema.Int, { exact: true })
+  }
+) {}
+
+export class IngestionMappingError extends Schema.TaggedError<IngestionMappingError>()(
+  "IngestionMappingError",
+  {
+    message: Schema.String,
+    sourceTag: Schema.optionalWith(Schema.Literal("file", "url", "stdin"), {
+      exact: true
+    }),
+    sourceRef: Schema.optionalWith(Schema.String, { exact: true }),
+    rowIndex: Schema.optionalWith(Schema.Int, { exact: true }),
+    lineNumber: Schema.optionalWith(Schema.Int, { exact: true })
+  }
+) {}
+
+export class IngestionEmptyInputError extends Schema.TaggedError<IngestionEmptyInputError>()(
+  "IngestionEmptyInputError",
+  {
+    message: Schema.String,
+    sourceTag: Schema.optionalWith(Schema.Literal("text", "file", "url", "stdin"), {
+      exact: true
+    }),
+    sourceRef: Schema.optionalWith(Schema.String, { exact: true })
+  }
+) {}
+
 export type AnyLangExtractError =
   | LangExtractError
   | InferenceConfigError
@@ -196,3 +264,9 @@ export type AnyLangExtractError =
   | InvalidDatasetError
   | VisualizationError
   | IoError
+  | IngestionConfigError
+  | IngestionSourceError
+  | IngestionFormatError
+  | IngestionDecodeError
+  | IngestionMappingError
+  | IngestionEmptyInputError

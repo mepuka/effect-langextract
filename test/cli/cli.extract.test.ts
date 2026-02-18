@@ -26,7 +26,8 @@ describe("CLI extract command", () => {
       yield* writeExamplesFile(examplesPath)
 
       yield* executeExtractCommand({
-        text: "Alice visited Paris and Bob stayed in London.",
+        input: "Alice visited Paris and Bob stayed in London.",
+        inputFormat: "text",
         prompt: "Extract travel snippets.",
         examplesFile: examplesPath,
         provider: "anthropic",
@@ -75,7 +76,7 @@ describe("CLI extract command", () => {
       Effect.flip,
       Effect.tap((error) =>
         Effect.sync(() => {
-          expect(error.message).toContain("Provide one input source")
+          expect(error.message).toContain("requires --input")
         })
       ),
       Effect.asVoid

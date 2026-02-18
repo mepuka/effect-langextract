@@ -186,28 +186,13 @@ const buildLegend = (
     .map((extractionClass) => {
       const count = counts.get(extractionClass) ?? 0
       const color = colors.get(extractionClass) ?? Palette[0]
-      return `<li><span class="lx-dot" style="background:${color}"></span>${escapeHtml(extractionClass)} <span class="lx-legend-count">(${count})</span></li>`
+      return `<li><span class="lx-dot" style="background:${color}"></span>${escapeHtml(extractionClass)} (${count})</li>`
     })
     .join("")}</ul></section>`
 }
 
 const formatAttributeValue = (value: string | ReadonlyArray<string>): string =>
   typeof value === "string" ? value : value.join(", ")
-
-const renderTooltipContent = (extraction: SerializedExtraction): string => {
-  const attributes = Object.entries(extraction.attributes)
-  const attributeLines =
-    attributes.length === 0
-      ? `<div><strong>Attributes:</strong> none</div>`
-      : attributes
-          .map(
-            ([key, value]) =>
-              `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(formatAttributeValue(value))}</div>`
-          )
-          .join("")
-
-  return `<div><strong>Class:</strong> ${escapeHtml(extraction.extractionClass)}</div><div><strong>Status:</strong> ${escapeHtml(extraction.status)}</div><div><strong>Span:</strong> ${extraction.start}-${extraction.end}</div>${attributeLines}`
-}
 
 const renderAttributesPanelContent = (
   extraction: SerializedExtraction | undefined
