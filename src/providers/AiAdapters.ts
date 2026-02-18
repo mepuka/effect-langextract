@@ -2,7 +2,7 @@ import * as NativeLanguageModel from "@effect/ai/LanguageModel"
 import { Clock, Effect, Schema, Stream } from "effect"
 
 import { InferenceRuntimeError } from "../Errors.js"
-import { ScoredOutput } from "../FormatType.js"
+import { type FormatType, ScoredOutput } from "../FormatType.js"
 import { errorMessage } from "../internal/errorMessage.js"
 import { fnv1aHash } from "../internal/hash.js"
 import type { InferOptions, LanguageModelService } from "../LanguageModel.js"
@@ -28,9 +28,56 @@ const makeCacheFingerprint = (prompt: string): string => fnv1aHash(prompt)
 const normalizeNamespace = (options?: InferOptions): string =>
   options?.cachePolicy?.namespace ?? "langextract"
 
+interface ProviderRequestMetadata {
+  readonly temperature?: number | undefined
+  readonly formatType?: FormatType | undefined
+}
+
+const isFormatType = (value: unknown): value is FormatType =>
+  value === "json" || value === "yaml"
+
+const normalizeProviderMetadata = (
+  value: unknown
+): ProviderRequestMetadata => {
+  if (typeof value !== "object" || value === null) {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  return {
+    ...(typeof record.temperature === "number"
+      ? { temperature: record.temperature }
+      : {}),
+    ...(isFormatType(record.formatType)
+      ? { formatType: record.formatType }
+      : {})
+  }
+}
+
+const applyProviderMetadataDefaults = (
+  inferOptions: InferOptions | undefined,
+  defaults: ProviderRequestMetadata | undefined
+): InferOptions | undefined => {
+  if (defaults === undefined) {
+    return inferOptions
+  }
+  const mergedProviderOptions = {
+    ...defaults,
+    ...normalizeProviderMetadata(inferOptions?.providerOptions)
+  }
+  return {
+    ...(inferOptions ?? {}),
+    providerOptions: mergedProviderOptions
+  }
+}
+
+const extractProviderMetadata = (
+  options?: InferOptions
+): ProviderRequestMetadata =>
+  normalizeProviderMetadata(options?.providerOptions)
+
 const isDeterministicRequest = (options?: InferOptions): boolean => {
-  const temperature = options?.providerOptions?.temperature
-  if (typeof temperature === "number") {
+  const { temperature } = extractProviderMetadata(options)
+  if (temperature !== undefined) {
     return temperature <= 0
   }
   return true
@@ -41,14 +88,29 @@ const cacheKeyForPrompt = (
   modelId: string,
   prompt: string,
   options?: InferOptions
-): PrimedCacheKey =>
-  new PrimedCacheKey({
+): PrimedCacheKey => {
+  const providerMetadata = extractProviderMetadata(options)
+  return new PrimedCacheKey({
     provider,
     modelId,
     promptFingerprint: makeCacheFingerprint(prompt),
+    ...(options?.structuredOutput !== undefined
+      ? {
+          schemaFingerprint: fnv1aHash(
+            String(options.structuredOutput.schema.ast)
+          )
+        }
+      : {}),
+    ...(providerMetadata.temperature !== undefined
+      ? { temperature: providerMetadata.temperature }
+      : {}),
+    ...(providerMetadata.formatType !== undefined
+      ? { formatType: providerMetadata.formatType }
+      : {}),
     promptVersion: `pass-${options?.passNumber ?? 1}`,
     namespace: normalizeNamespace(options)
   })
+}
 
 const withCacheMetadata = (
   value: ReadonlyArray<ScoredOutput>,
@@ -216,6 +278,7 @@ export const makeProviderLanguageModelService = (options: {
   readonly modelId: string
   readonly requiresFenceOutput?: boolean
   readonly schema?: ProviderSchema | undefined
+  readonly defaultProviderMetadata?: ProviderRequestMetadata | undefined
   readonly cache: PrimedCache
   readonly runtimeControl: RuntimeControl
   readonly nativeModel: NativeLanguageModel.Service
@@ -232,16 +295,21 @@ export const makeProviderLanguageModelService = (options: {
   infer: (batchPrompts, inferOptions) =>
     Effect.forEach(
       batchPrompts,
-      (prompt) =>
-        runPromptInference(
+      (prompt) => {
+        const effectiveInferOptions = applyProviderMetadataDefaults(
+          inferOptions,
+          options.defaultProviderMetadata
+        )
+        return runPromptInference(
           options.nativeModel,
           options.provider,
           options.modelId,
           options.cache,
           options.runtimeControl,
           prompt,
-          inferOptions
-        ),
+          effectiveInferOptions
+        )
+      },
       {
         concurrency:
           inferOptions?.providerConcurrency ??
@@ -249,22 +317,34 @@ export const makeProviderLanguageModelService = (options: {
           8
       }
     ),
-  generateText: (prompt, inferOptions) =>
-    runPromptInference(
+  generateText: (prompt, inferOptions) => {
+    const effectiveInferOptions = applyProviderMetadataDefaults(
+      inferOptions,
+      options.defaultProviderMetadata
+    )
+    return runPromptInference(
       options.nativeModel,
       options.provider,
       options.modelId,
       options.cache,
       options.runtimeControl,
       prompt,
-      inferOptions
-    ).pipe(Effect.map((values) => values[0] ?? new ScoredOutput({}))),
-  generateObject: (prompt, inferOptions) =>
-    options.runtimeControl.withProviderPermit(
+      effectiveInferOptions
+    ).pipe(Effect.map((values) => values[0] ?? new ScoredOutput({})))
+  },
+  generateObject: (prompt, inferOptions) => {
+    const effectiveInferOptions = applyProviderMetadataDefaults(
+      inferOptions,
+      options.defaultProviderMetadata
+    )
+    return options.runtimeControl.withProviderPermit(
       options.provider,
       options.nativeModel.generateObject({
         prompt,
-        schema: JsonRecord
+        schema: effectiveInferOptions?.structuredOutput?.schema ?? JsonRecord,
+        ...(effectiveInferOptions?.structuredOutput?.objectName !== undefined
+          ? { objectName: effectiveInferOptions.structuredOutput.objectName }
+          : {})
       })
     ).pipe(
       Effect.map((response) => response.value),
@@ -282,7 +362,7 @@ export const makeProviderLanguageModelService = (options: {
           options.cache,
           options.runtimeControl,
           prompt,
-          inferOptions
+          effectiveInferOptions
         ).pipe(
           Effect.flatMap((values) =>
             Schema.decodeUnknown(JsonString)(values[0]?.output ?? "{}").pipe(
@@ -304,7 +384,8 @@ export const makeProviderLanguageModelService = (options: {
       Effect.mapError((error) =>
         toInferenceRuntimeError(options.provider, "Provider object generation failed", error)
       )
-    ),
+    )
+  },
   streamText: (prompt, inferOptions) =>
     Stream.unwrap(
       logProviderEvent("langextract.provider.stream_start", {

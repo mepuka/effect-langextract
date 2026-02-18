@@ -131,6 +131,7 @@ const parseDirectExtractionRecord = (
 ): Extraction | undefined => {
   const extractionClass = extractStringField(record, [
     "extractionClass",
+    "extraction_class",
     "class",
     "type"
   ])
@@ -138,12 +139,21 @@ const parseDirectExtractionRecord = (
     return undefined
   }
 
-  const rawText = extractStringField(record, ["extractionText", "text", "value"])
+  const rawText = extractStringField(record, [
+    "extractionText",
+    "extraction_text",
+    "text",
+    "value"
+  ])
   if (rawText === undefined) {
     return undefined
   }
 
-  const extractionIndex = extractNumberField(record, ["extractionIndex", "index"])
+  const extractionIndex = extractNumberField(record, [
+    "extractionIndex",
+    "extraction_index",
+    "index"
+  ])
   const attributes =
     extractAttributes(record, "attributes")
     ?? extractAttributes(record, `${extractionClass}${ATTRIBUTE_SUFFIX}`)

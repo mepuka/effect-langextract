@@ -37,7 +37,8 @@ export const extractDocumentsStream = <E, R>(
             maxBatchInputTokens: options.maxBatchInputTokens,
             cachePolicy: options.cachePolicy,
             promptDescription: options.promptDescription,
-            promptExamples: options.promptExamples
+            promptExamples: options.promptExamples,
+            extractionTarget: options.extractionTarget
           })
         })
       )

@@ -59,6 +59,20 @@ describe("Resolver parity hardening", () => {
     }).pipe(Effect.provide(resolverLayer))
   )
 
+  it.effect("supports snake_case extraction_class/extraction_text aliases", () =>
+    Effect.gen(function* () {
+      const resolver = yield* Resolver
+      const parsed = yield* resolver.resolve(
+        '[{"extraction_class":"medication","extraction_text":"Naprosyn","extraction_index":3}]'
+      )
+
+      expect(parsed).toHaveLength(1)
+      expect(parsed[0]?.extractionClass).toBe("medication")
+      expect(parsed[0]?.extractionText).toBe("Naprosyn")
+      expect(parsed[0]?.extractionIndex).toBe(3)
+    }).pipe(Effect.provide(resolverLayer))
+  )
+
   it.effect("keeps SequenceMatcher-style ordering behavior for interleaved extractions", () =>
     Effect.gen(function* () {
       const resolver = yield* Resolver

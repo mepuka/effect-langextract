@@ -175,6 +175,10 @@ export const GeminiLanguageModelLive: Layer.Layer<
             formatType: config.formatType,
             useFences: config.formatType !== "json"
           }),
+          defaultProviderMetadata: {
+            temperature: config.temperature,
+            formatType: config.formatType
+          },
           cache,
           runtimeControl,
           nativeModel,

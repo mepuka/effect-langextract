@@ -10,14 +10,17 @@ import {
   Extraction,
   makeDocumentEffect
 } from "./Data.js"
+import type { AnyExtractionTarget } from "./ExtractionTarget.js"
 import { LangExtractError } from "./Errors.js"
 import { FormatHandler } from "./FormatHandler.js"
 import { errorMessage } from "./internal/errorMessage.js"
+import { asRecord } from "./internal/records.js"
 import { LanguageModel } from "./LanguageModel.js"
 import type { PrimedCachePolicy } from "./PrimedCache.js"
 import { PromptBuilder } from "./Prompting.js"
 import { Resolver } from "./Resolver.js"
 import { Tokenizer } from "./Tokenizer.js"
+import { SCHEMA_DATA_ATTRIBUTE_KEY } from "./TypedExtraction.js"
 
 export interface AnnotateOptions {
   readonly maxCharBuffer: number
@@ -32,6 +35,7 @@ export interface AnnotateOptions {
   readonly cachePolicy?: PrimedCachePolicy | undefined
   readonly promptDescription?: string | undefined
   readonly promptExamples?: ReadonlyArray<ExampleData> | undefined
+  readonly extractionTarget?: AnyExtractionTarget | undefined
 }
 
 export interface AnnotatorService {
@@ -62,6 +66,7 @@ type AnnotatorDependencies = {
   readonly promptBuilder: PromptBuilder
   readonly languageModel: LanguageModel
   readonly alignmentExecutor: AlignmentExecutor
+  readonly formatHandler: FormatHandler
   readonly resolver: Resolver
   readonly documentIdGenerator: DocumentIdGenerator
 }
@@ -88,6 +93,218 @@ const encodeExtractionsForPrompt = (
     return "[]"
   }
 }
+
+const extractStringField = (
+  record: Readonly<Record<string, unknown>>,
+  keys: ReadonlyArray<string>
+): string | undefined => {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value
+    }
+  }
+  return undefined
+}
+
+const extractNumberField = (
+  record: Readonly<Record<string, unknown>>,
+  keys: ReadonlyArray<string>
+): number | undefined => {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value
+    }
+  }
+  return undefined
+}
+
+const extractAttributeValue = (
+  value: unknown
+): string | ReadonlyArray<string> | undefined => {
+  if (typeof value === "string") {
+    return value
+  }
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value)
+  }
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((entry) => (typeof entry === "string" ? entry : String(entry)))
+      .filter((entry) => entry.length > 0)
+    return normalized.length > 0 ? normalized : undefined
+  }
+  return undefined
+}
+
+const extractAttributes = (
+  record: Readonly<Record<string, unknown>>,
+  className: string
+): Record<string, string | ReadonlyArray<string>> | undefined => {
+  const attributes: Record<string, string | ReadonlyArray<string>> = {}
+  const directAttributes = asRecord(record.attributes)
+  if (directAttributes !== undefined) {
+    for (const [key, value] of Object.entries(directAttributes)) {
+      const normalized = extractAttributeValue(value)
+      if (normalized !== undefined) {
+        attributes[key] = normalized
+      }
+    }
+  }
+
+  const suffixAttributes = asRecord(record[`${className}_attributes`])
+  if (suffixAttributes !== undefined) {
+    for (const [key, value] of Object.entries(suffixAttributes)) {
+      const normalized = extractAttributeValue(value)
+      if (normalized !== undefined) {
+        attributes[key] = normalized
+      }
+    }
+  }
+
+  return Object.keys(attributes).length > 0 ? attributes : undefined
+}
+
+const schemaPayloadFromRecord = (
+  record: Readonly<Record<string, unknown>>
+): unknown => {
+  if (Object.prototype.hasOwnProperty.call(record, "data")) {
+    return record.data
+  }
+
+  const normalized: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (
+      key === "extractionClass" ||
+      key === "extraction_class" ||
+      key === "extractionText" ||
+      key === "extraction_text" ||
+      key === "extractionIndex" ||
+      key === "extraction_index" ||
+      key === "index" ||
+      key === "attributes" ||
+      key.endsWith("_attributes")
+    ) {
+      continue
+    }
+    normalized[key] = value
+  }
+  return normalized
+}
+
+const resolveSchemaExtractions = (
+  output: string | Record<string, unknown>,
+  options: AnnotateOptions,
+  dependencies: AnnotatorDependencies,
+  passNumber: number
+): Effect.Effect<ReadonlyArray<Extraction>> =>
+  Effect.gen(function* () {
+    const target = options.extractionTarget
+    if (target === undefined) {
+      const legacyOutput = typeof output === "string" ? output : "{}"
+      return yield* dependencies.resolver
+        .resolve(legacyOutput, {
+          suppressParseErrors: true
+        })
+        .pipe(Effect.catchAll(() => Effect.succeed([] as const)))
+    }
+
+    const parsed =
+      typeof output === "string"
+        ? yield* dependencies.formatHandler
+            .parseOutput(output, { strict: false })
+            .pipe(Effect.catchAll(() => Effect.succeed([] as const)))
+        : Array.isArray(output.extractions)
+          ? output.extractions
+              .map(asRecord)
+              .filter(
+                (record): record is Record<string, unknown> => record !== undefined
+              )
+          : [output]
+
+    const extracted: Array<Extraction> = []
+    let fallbackIndex = 0
+
+    for (const [groupIndex, record] of parsed.entries()) {
+      const extractionClass = extractStringField(record, [
+        "extractionClass",
+        "extraction_class",
+        "class",
+        "type"
+      ])
+      const extractionText = extractStringField(record, [
+        "extractionText",
+        "extraction_text",
+        "text",
+        "value"
+      ])
+
+      if (extractionClass === undefined || extractionText === undefined) {
+        continue
+      }
+
+      const classSchema = target.classSchemasByIdentifier[extractionClass]
+      if (classSchema === undefined) {
+        yield* logAnnotatorEvent("langextract.annotator.schema_unknown_class", {
+          passNumber,
+          extractionClass
+        })
+        continue
+      }
+
+      const payload = schemaPayloadFromRecord(record)
+      const decoded = Schema.decodeUnknownEither(classSchema)(payload)
+      if (decoded._tag === "Left") {
+        yield* logAnnotatorEvent("langextract.annotator.schema_validation_failed", {
+          passNumber,
+          extractionClass,
+          error: String(decoded.left)
+        })
+        continue
+      }
+
+      const encodedPayload = yield* Schema.encode(JsonString)(decoded.right).pipe(
+        Effect.catchAll((error) =>
+          logAnnotatorEvent("langextract.annotator.schema_payload_encode_failed", {
+            passNumber,
+            extractionClass,
+            error: String(error)
+          }).pipe(Effect.as("{}"))
+        )
+      )
+      const extractionIndex = extractNumberField(record, [
+        "extractionIndex",
+        "extraction_index",
+        "index"
+      ])
+
+      const attributes = extractAttributes(record, extractionClass) ?? {}
+      attributes[SCHEMA_DATA_ATTRIBUTE_KEY] = encodedPayload
+
+      fallbackIndex += 1
+      extracted.push(
+        new Extraction({
+          extractionClass,
+          extractionText,
+          extractionIndex:
+            extractionIndex !== undefined && Number.isInteger(extractionIndex)
+              ? extractionIndex
+              : fallbackIndex,
+          groupIndex,
+          attributes
+        })
+      )
+    }
+
+    return extracted.sort(
+      (left, right) => (left.extractionIndex ?? 0) - (right.extractionIndex ?? 0)
+    )
+  })
 
 const buildPromptForChunk = (
   chunk: TextChunk,
@@ -213,6 +430,49 @@ const toAnnotatedDocument = (
     extractions: sortExtractions(extractions)
   })
 
+const runBatchInference = (
+  batch: ReadonlyArray<PreparedChunk>,
+  options: AnnotateOptions,
+  dependencies: AnnotatorDependencies,
+  passNumber: number
+): Effect.Effect<ReadonlyArray<string | Record<string, unknown>>, LangExtractError> => {
+  const extractionTarget = options.extractionTarget
+  if (extractionTarget !== undefined) {
+    return Effect.forEach(
+      batch,
+      ({ prompt }) =>
+        dependencies.languageModel
+          .generateObject(prompt, {
+            cachePolicy: options.cachePolicy,
+            providerConcurrency: options.providerConcurrency,
+            passNumber,
+            structuredOutput: {
+              schema: extractionTarget.outputSchema,
+              objectName: "extractions"
+            }
+          })
+          .pipe(Effect.mapError(toLangExtractError)),
+      {
+        concurrency: options.providerConcurrency
+      }
+    )
+  }
+
+  const prompts = batch.map((item) => item.prompt)
+  return dependencies.languageModel
+    .infer(prompts, {
+      cachePolicy: options.cachePolicy,
+      providerConcurrency: options.providerConcurrency,
+      passNumber
+    })
+    .pipe(
+      Effect.map((outputs) =>
+        outputs.map((candidateOutputs) => candidateOutputs[0]?.output ?? "[]")
+      ),
+      Effect.mapError(toLangExtractError)
+    )
+}
+
 const annotateDocumentsPassStream = (
   documents: ReadonlyArray<Document>,
   options: AnnotateOptions,
@@ -314,29 +574,24 @@ const annotateDocumentsPassStream = (
                   batchSize: prompts.length
                 }).pipe(
                   Effect.zipRight(
-                    dependencies.languageModel
-                      .infer(prompts, {
-                        cachePolicy: options.cachePolicy,
-                        providerConcurrency: options.providerConcurrency,
-                        passNumber
-                      })
+                    runBatchInference(batch, options, dependencies, passNumber)
                       .pipe(
-                        Effect.mapError(toLangExtractError),
                         Effect.flatMap((outputs) =>
                           Effect.forEach(
                             outputs,
-                            (candidateOutputs, outputIndex) => {
+                            (modelOutput, outputIndex) => {
                               const prepared = batch[outputIndex]
                               if (prepared === undefined) {
                                 return Effect.void
                               }
                               const chunk = prepared.chunk
-                              const firstOutput = candidateOutputs[0]?.output ?? "[]"
 
-                              return dependencies.resolver
-                                .resolve(firstOutput, {
-                                  suppressParseErrors: true
-                                })
+                              return resolveSchemaExtractions(
+                                modelOutput,
+                                options,
+                                dependencies,
+                                passNumber
+                              )
                                 .pipe(
                                   Effect.mapError(toLangExtractError),
                                   Effect.flatMap((resolved) =>
@@ -538,6 +793,7 @@ export class Annotator extends Effect.Service<Annotator>()(
       const promptBuilder = yield* PromptBuilder
       const languageModel = yield* LanguageModel
       const alignmentExecutor = yield* AlignmentExecutor
+      const formatHandler = yield* FormatHandler
       const resolver = yield* Resolver
       const documentIdGenerator = yield* DocumentIdGenerator
       const dependencies: AnnotatorDependencies = {
@@ -545,6 +801,7 @@ export class Annotator extends Effect.Service<Annotator>()(
         promptBuilder,
         languageModel,
         alignmentExecutor,
+        formatHandler,
         resolver,
         documentIdGenerator
       }

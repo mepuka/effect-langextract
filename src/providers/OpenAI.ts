@@ -166,6 +166,12 @@ export const OpenAILanguageModelLive: Layer.Layer<
             formatType: config.formatType,
             useFences: config.formatType !== "json"
           }),
+          defaultProviderMetadata: {
+            ...(config.temperature !== undefined
+              ? { temperature: config.temperature }
+              : {}),
+            formatType: config.formatType
+          },
           cache,
           runtimeControl,
           nativeModel,

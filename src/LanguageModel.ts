@@ -22,6 +22,10 @@ export interface InferOptions {
   readonly contextWindowChars?: number | undefined
   readonly additionalContextHash?: string | undefined
   readonly preferStructuredOutput?: boolean | undefined
+  readonly structuredOutput?: {
+    readonly schema: Schema.Schema<any, any, never>
+    readonly objectName?: string | undefined
+  } | undefined
   readonly stream?: boolean | undefined
 }
 

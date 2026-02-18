@@ -5,13 +5,15 @@ import * as HttpClientResponse from "@effect/platform/HttpClientResponse"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
 import * as BunContext from "@effect/platform-bun/BunContext"
 import { describe, expect, it } from "@effect/vitest"
-import { Chunk, Effect, Layer, Redacted, Stream } from "effect"
+import { Chunk, Effect, Layer, Redacted, Schema, Stream } from "effect"
 
 import {
   makeExtractionExecutionLayer
 } from "../../src/api/ExecutionLayer.js"
-import { extract, extractStream } from "../../src/api/Extraction.js"
+import { extract, extractStream, extractTyped } from "../../src/api/Extraction.js"
 import { DocumentIdGenerator, ExampleData } from "../../src/Data.js"
+import { ExtractionTarget } from "../../src/ExtractionTarget.js"
+import { ScoredOutput } from "../../src/FormatType.js"
 import { Ingestion } from "../../src/Ingestion.js"
 import {
   DocumentMappingSpec,
@@ -30,6 +32,49 @@ const mockLanguageModelLayer = LanguageModel.testLayer({
   defaultText:
     '[{"extractionClass":"snippet","extractionText":"Alice visited"}]'
 })
+
+const schemaModeLanguageModelLayer = Layer.succeed(
+  LanguageModel,
+  LanguageModel.make({
+    modelId: "schema-model",
+    requiresFenceOutput: false,
+    schema: undefined,
+    infer: (batchPrompts) =>
+      Effect.succeed(
+        batchPrompts.map(() => [
+          new ScoredOutput({
+            provider: "schema-mock",
+            output: "[]",
+            score: 1
+          })
+        ])
+      ),
+    generateText: (prompt) =>
+      Effect.succeed(
+        new ScoredOutput({
+          provider: "schema-mock",
+          output: prompt,
+          score: 1
+        })
+      ),
+    generateObject: () =>
+      Effect.succeed({
+        extractions: [
+          {
+            extraction_class: "person",
+            extraction_text: "Alice",
+            data: { name: "Alice", age: 30 }
+          },
+          {
+            extractionClass: "person",
+            extractionText: "Invalid Person",
+            data: { name: "Invalid Person", age: "unknown" }
+          }
+        ]
+      }),
+    streamText: (prompt) => Stream.succeed(prompt)
+  })
+)
 
 const writeFile = (
   path: string,
@@ -51,6 +96,21 @@ const makeExtractionLayer = () =>
     },
     {
       languageModelLayer: mockLanguageModelLayer,
+      primedCacheStoreLayer: KeyValueStore.layerMemory
+    }
+  )
+
+const makeSchemaExtractionLayer = () =>
+  makeExtractionExecutionLayer(
+    {
+      provider: "openai",
+      modelId: "gpt-4o-mini",
+      apiKey: Redacted.make(""),
+      providerConcurrency: 8,
+      primedCacheNamespace: "test-schema"
+    },
+    {
+      languageModelLayer: schemaModeLanguageModelLayer,
       primedCacheStoreLayer: KeyValueStore.layerMemory
     }
   )
@@ -90,6 +150,13 @@ const appLayer = Layer.mergeAll(
   makeExtractionLayer()
 )
 
+const schemaAppLayer = Layer.mergeAll(
+  runtimeLayer,
+  Ingestion.Default,
+  DocumentIdGenerator.Default,
+  makeSchemaExtractionLayer()
+)
+
 const urlAppLayer = Layer.mergeAll(
   BunContext.layer,
   mockUrlHttpClientLayer,
@@ -104,6 +171,20 @@ const examples = [
     extractions: []
   })
 ]
+
+const PersonSchema = Schema.Struct({
+  name: Schema.String,
+  age: Schema.Number
+}).annotations({
+  identifier: "person",
+  description: "A person mention",
+  examples: [{ name: "Alice", age: 30 }]
+})
+
+const schemaTarget = ExtractionTarget.make({
+  classes: { person: PersonSchema },
+  description: "Extract people"
+})
 
 describe("Extraction API", () => {
   it.effect("extracts from raw text ingestion", () =>
@@ -226,6 +307,42 @@ describe("Extraction API", () => {
         Effect.sync(() => {
           expect(documents).toHaveLength(1)
           expect((documents[0]?.extractions.length ?? 0) > 0).toBe(true)
+        })
+      ),
+      Effect.asVoid
+    )
+  )
+
+  it.effect("extractTyped returns typed schema results and drops invalid rows", () =>
+    extractTyped({
+      ingestion: new IngestionRequest({
+        source: new IngestionSourceText({
+          _tag: "text",
+          text: "Alice visited Paris and someone else appeared."
+        }),
+        format: "text"
+      }),
+      target: schemaTarget,
+      annotate: {
+        maxCharBuffer: 1000,
+        batchLength: 10,
+        batchConcurrency: 1,
+        providerConcurrency: 8,
+        extractionPasses: 1
+      },
+      cachePolicy: new PrimedCachePolicy({
+        enabled: false,
+        namespace: "schema-test"
+      })
+    }).pipe(
+      Effect.provide(schemaAppLayer),
+      Effect.tap((documents) =>
+        Effect.sync(() => {
+          expect(documents).toHaveLength(1)
+          const typed = documents[0]?.extractions ?? []
+          expect(typed).toHaveLength(1)
+          expect(typed[0]?.extractionClass).toBe("person")
+          expect(typed[0]?.data).toEqual({ name: "Alice", age: 30 })
         })
       ),
       Effect.asVoid
