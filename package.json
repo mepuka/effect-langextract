@@ -8,6 +8,8 @@
   },
   "scripts": {
     "prepare": "effect-language-service patch",
+    "build:visualization:bundle": "bun run scripts/visualization/build-frontend-bundle.ts",
+    "check:visualization:bundle": "bun run scripts/visualization/build-frontend-bundle.ts --check",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "cli": "bun run src/main.ts",
@@ -33,6 +35,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@effect-atom/atom": "^0.5.1",
     "@effect/ai": "^0.33.2",
     "@effect/ai-anthropic": "^0.23.0",
     "@effect/ai-google": "^0.12.1",

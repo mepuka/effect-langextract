@@ -5,6 +5,7 @@
     "": {
       "name": "effect-langextract",
       "dependencies": {
+        "@effect-atom/atom": "^0.5.1",
         "@effect/ai": "^0.33.2",
         "@effect/ai-anthropic": "^0.23.0",
         "@effect/ai-google": "^0.12.1",
@@ -30,6 +31,8 @@
   },
   "packages": {
     "@anthropic-ai/tokenizer": ["@anthropic-ai/tokenizer@0.0.4", "", { "dependencies": { "@types/node": "^18.11.18", "tiktoken": "^1.0.10" } }, "sha512-EHRKbxlxlc8W4KCBEseByJ7YwyYCmgu9OyN59H9+IYIGPoKv8tXyQXinkeGDI+cI8Tiuz9wk2jZb/kK7AyvL7g=="],
+
+    "@effect-atom/atom": ["@effect-atom/atom@0.5.1", "", { "peerDependencies": { "@effect/experimental": "^0.58.0", "@effect/platform": "^0.94.2", "@effect/rpc": "^0.73.0", "effect": "^3.19.15" } }, "sha512-3GKvEWsM887SXUvHM0t9k+msgAYRG7eGLH0b/AaZ033ozK1qMB69eQxtXnHg+SuJUgv9KCfX0XD6i6UmYXas5Q=="],
 
     "@effect/ai": ["@effect/ai@0.33.2", "", { "dependencies": { "find-my-way-ts": "^0.1.6" }, "peerDependencies": { "@effect/experimental": "^0.58.0", "@effect/platform": "^0.94.1", "@effect/rpc": "^0.73.0", "effect": "^3.19.14" } }, "sha512-iJ6pz9qiKFXhcnriJJSBQ5+Bz3oEg+6hVQ7OPmmTa0dVkKUPIgX9nHqHfstcwLnDfdXBj/zCl79U+iMpGtQBnA=="],
 

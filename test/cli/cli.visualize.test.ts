@@ -12,7 +12,7 @@ import {
 } from "../helpers/cli.js"
 
 describe("CLI visualize command", () => {
-  it.effect("writes HTML visualization from annotated document JSON", () =>
+  it.effect("writes interactive HTML visualization from annotated document JSON", () =>
     Effect.gen(function* () {
       const inputPath = tempPath("cli-visualize", "annotated.json")
       const outputPath = tempPath("cli-visualize", "visualization.html")
@@ -27,7 +27,34 @@ describe("CLI visualize command", () => {
 
       const html = yield* readTextFile(outputPath)
       expect(html).toContain("<mark")
-      expect(html).toContain("person")
+      expect(html).toContain("id=\"lx-visualization-payload\"")
+      expect(html).toContain("id=\"lx-play-toggle\"")
+      expect(html).toContain("__effectLangExtractVisualizationBootstrap")
+      expect(html).toContain('"animationSpeed":0.5')
+      expect(html).toContain('"showLegend":true')
+
+      yield* removeFile(inputPath)
+      yield* removeFile(outputPath)
+    })
+  )
+
+  it.effect("respects showLegend=false and preserves payload flags", () =>
+    Effect.gen(function* () {
+      const inputPath = tempPath("cli-visualize", "annotated-no-legend.json")
+      const outputPath = tempPath("cli-visualize", "visualization-no-legend.html")
+      yield* writeAnnotatedDocument(inputPath)
+
+      yield* executeVisualizeCommand({
+        input: inputPath,
+        outputPath,
+        animationSpeed: 1.25,
+        showLegend: false
+      }).pipe(Effect.provide(BunFileSystem.layer))
+
+      const html = yield* readTextFile(outputPath)
+      expect(html).not.toContain("<ul class=\"lx-legend\"")
+      expect(html).toContain('"showLegend":false')
+      expect(html).toContain('"animationSpeed":1.25')
 
       yield* removeFile(inputPath)
       yield* removeFile(outputPath)
