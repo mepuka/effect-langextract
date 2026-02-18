@@ -44,7 +44,7 @@ langextract/prompting.py           -> src/Prompting.ts          (PromptTemplate,
 langextract/chunking.py            -> src/Chunking.ts           (TextChunk, ChunkIterator, SentenceIterator, batching)
 langextract/resolver.py            -> src/Resolver.ts           (Resolver service, WordAligner, alignment algorithms)
 langextract/annotation.py          -> src/Annotator.ts          (Annotator service, orchestration, multi-pass merging)
-langextract/extraction.py          -> src/Extract.ts            (Top-level extract() function as Effect program)
+langextract/extraction.py          -> src/api/Extraction.ts     (Top-level library extraction API: extractStream/extract)
 langextract/prompt_validation.py   -> src/PromptValidation.ts   (Validation of few-shot examples)
 langextract/io.py                  -> src/IO.ts                 (Dataset loading, JSONL I/O, URL download)
 langextract/visualization.py       -> src/Visualization.ts      (HTML visualization generation)
@@ -54,7 +54,11 @@ langextract/progress.py            -> (eliminated -- replaced by Effect logging)
 langextract/factory.py             -> (eliminated -- replaced by Effect Layer composition + Config)
 langextract/plugins.py             -> (eliminated -- no plugin system needed; use Layer composition)
 langextract/__init__.py            -> src/index.ts              (Public API re-exports)
-(new)                              -> src/Cli.ts                (@effect/cli command definitions)
+(new)                              -> src/Cli.ts                (@effect/cli command definitions, thin adapter wiring)
+(new)                              -> src/api/ExecutionLayer.ts (Provider/runtime Layer composition for extraction)
+(new)                              -> src/api/Render.ts         (Rendering API for json/jsonl/html output)
+(new)                              -> src/cli/ExtractAdapter.ts (CLI extract adapter to library APIs)
+(new)                              -> src/cli/VisualizeAdapter.ts (CLI visualize adapter to library APIs)
 (new)                              -> src/providers/AiAdapters.ts (@effect/ai provider adapters for infer())
 (new)                              -> src/runtime/BunAlignmentWorker.ts (Bun worker-backed alignment layer)
 (new)                              -> src/runtime/workers/*     (alignment worker protocol + worker entrypoint)
@@ -1060,7 +1064,7 @@ All configuration is expressed via `Config` from the `effect` package. API keys 
 ### 6.1 Extraction Config
 
 ```typescript
-// src/Extract.ts
+// src/ExtractionConfig.ts
 import { Config } from "effect"
 
 export const ExtractionConfig = Config.all({
@@ -1261,8 +1265,9 @@ effect-langextract visualize --input <annotated-document.json> [options]
 
 ### 7.2 Extract Command
 
-`extract` accepts one input source (`--text`, `--file`, or `--url`) and supports:
+`extract` accepts one unified input source (`--input`) with explicit format hints (`--input-format`) and supports:
 
+- Input/ingestion knobs: `--input`, `--input-format auto|text|json|jsonl|csv|url|stdin`, `--text-field`, `--id-field`, repeated `--context-field`, `--csv-delimiter`, `--csv-header`, `--row-error-mode`
 - Provider selection: `gemini | openai | anthropic | ollama`
 - Model/runtime knobs: `--model-id`, `--temperature`, `--provider-concurrency`
 - Pipeline knobs: `--max-char-buffer`, `--batch-length`, `--batch-concurrency`, `--extraction-passes`, `--context-window-chars`, `--max-batch-input-tokens`
@@ -1381,7 +1386,7 @@ declare const annotateDocumentsSinglePassFromPlan: (
 ### 8.1 Main Extraction Pipeline
 
 ```typescript
-// src/Extract.ts
+// src/api/Extraction.ts
 export const extract = (options: ExtractOptions) =>
   Effect.gen(function* () {
     const { text, promptDescription, examples, ...opts } = options
@@ -1800,9 +1805,9 @@ The port should implement `set_seqs()`, `get_matching_blocks()`, and `ratio()`.
 
 ### Phase 10: Top-Level API + I/O — Status: Complete
 
-**Files**: `src/Extract.ts`, `src/IO.ts`
+**Files**: `src/api/Extraction.ts`, `src/IO.ts`
 
-- `extract()` -- the main entry point combining everything
+- `extractStream()` / `extract()` -- the main library entry points combining ingestion + annotation
 - URL detection and download
 - Dataset loading from CSV (using `@effect/platform` file system)
 - JSONL reading/writing
@@ -2155,11 +2160,19 @@ src/
   Chunking.ts           -- TextChunk, ChunkIterator, SentenceIterator, batching
   Resolver.ts           -- Resolver service, WordAligner, SequenceMatcher
   Annotator.ts          -- Annotator service, orchestration, multi-pass merge
-  Extract.ts            -- Top-level extract() function
+  ExtractionConfig.ts   -- Shared Effect Config model for extract runtime settings
   PromptValidation.ts   -- Prompt alignment validation
   IO.ts                 -- Dataset loading, JSONL I/O, URL download
   Visualization.ts      -- HTML visualization generation
-  Cli.ts                -- @effect/cli command definitions
+  Cli.ts                -- @effect/cli command definitions (thin command layer)
+  api/
+    Extraction.ts       -- Library extractStream/extract APIs
+    Render.ts           -- Library rendering API (json/jsonl/html)
+    ExecutionLayer.ts   -- Provider/runtime composition API
+  cli/
+    ExtractAdapter.ts   -- CLI -> library extract mapping
+    VisualizeAdapter.ts -- CLI -> library visualize mapping
+    index.ts            -- CLI model types (provider/input/output/runtime config)
   runtime/
     BunRuntime.ts       -- Bun runtime layer composition
     BunMain.ts          -- Bun CLI entrypoint

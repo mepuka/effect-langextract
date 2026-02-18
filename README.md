@@ -22,7 +22,7 @@ bun install
 bun run typecheck
 bun run test
 bun run perf:annotator
-bun run cli -- extract --text "Alice visited Paris" --examples-file ./examples.json --provider anthropic
+bun run cli -- extract --input "Alice visited Paris" --input-format text --examples-file ./examples.json --provider anthropic
 bun run cli -- visualize --input ./annotated-document.json --output-path ./output.html
 ```
 
@@ -31,8 +31,20 @@ Supported test entrypoint: use `bun run test` (not `bun test`).
 Node-ready runtime composition is also available:
 
 ```bash
-bun run cli:node -- extract --text "Alice visited Paris" --examples-file ./examples.json --provider anthropic
+bun run cli:node -- extract --input "Alice visited Paris" --input-format text --examples-file ./examples.json --provider anthropic
 ```
+
+## Library API
+
+The package root (`src/index.ts`) now exports library-first APIs only (CLI internals are not re-exported).
+
+- Extraction API: `src/api/Extraction.ts`
+  - `extractStream(request)` for streaming `AnnotatedDocument` output.
+  - `extract(request)` for collected `ReadonlyArray<AnnotatedDocument>` output.
+- Rendering API: `src/api/Render.ts`
+  - `renderDocuments({ format: \"json\" | \"jsonl\" | \"html\" })`.
+- Runtime composition API: `src/api/ExecutionLayer.ts`
+  - `makeExtractionExecutionLayer(config, overrides)`.
 
 ## Performance Harness
 

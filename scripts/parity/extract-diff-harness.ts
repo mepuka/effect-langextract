@@ -11,12 +11,17 @@ import {
   ExampleData
 } from "../../src/Data.js"
 import { InferenceConfigError } from "../../src/Errors.js"
-import { extract } from "../../src/Extract.js"
 import { FormatHandler } from "../../src/FormatHandler.js"
+import { Ingestion } from "../../src/Ingestion.js"
 import { LanguageModel } from "../../src/LanguageModel.js"
-import { PrimedCache } from "../../src/PrimedCache.js"
+import { PrimedCache, PrimedCachePolicy } from "../../src/PrimedCache.js"
 import { PromptBuilder } from "../../src/Prompting.js"
 import { Resolver } from "../../src/Resolver.js"
+import { extract } from "../../src/api/Extraction.js"
+import {
+  IngestionRequest,
+  IngestionSourceText
+} from "../../src/ingestion/Models.js"
 import { Annotator } from "../../src/index.js"
 import { Tokenizer } from "../../src/index.js"
 
@@ -203,7 +208,9 @@ export const findFirstDiffPath = (
   return currentPath
 }
 
-const makeRuntimeLayer = (modelOutput: string): Layer.Layer<Annotator | PrimedCache> => {
+const makeRuntimeLayer = (
+  modelOutput: string
+): Layer.Layer<Annotator | PrimedCache | Ingestion | DocumentIdGenerator> => {
   const resolverLayer = Layer.provide(Resolver.DefaultWithoutDependencies, [
     Tokenizer.Default,
     FormatHandler.Default
@@ -213,6 +220,8 @@ const makeRuntimeLayer = (modelOutput: string): Layer.Layer<Annotator | PrimedCa
     AlignmentExecutor.DefaultWithoutDependencies,
     [resolverLayer]
   )
+
+  const documentIdLayer = DocumentIdGenerator.testLayer()
 
   const annotatorLayer = Layer.provide(Annotator.DefaultWithoutDependencies, [
     Tokenizer.Default,
@@ -225,11 +234,13 @@ const makeRuntimeLayer = (modelOutput: string): Layer.Layer<Annotator | PrimedCa
       modelId: "parity-fixture-model",
       defaultText: modelOutput
     }),
-    DocumentIdGenerator.testLayer()
+    documentIdLayer
   ])
 
   return Layer.mergeAll(
     annotatorLayer,
+    documentIdLayer,
+    Ingestion.Default,
     PrimedCache.testLayer({
       enableRequestStore: true,
       enableSessionStore: false
@@ -241,21 +252,43 @@ const runParityCase = (
   parityCase: ParityCase
 ): Effect.Effect<NormalizedAnnotatedDocument, Error> =>
   extract({
-    text: parityCase.text,
-    promptDescription: parityCase.promptDescription,
-    examples: parityCase.examples,
-    maxCharBuffer: 500,
-    batchLength: 4,
-    batchConcurrency: 1,
-    providerConcurrency: 2,
-    extractionPasses: 1,
-    primedCacheEnabled: false,
-    primedCacheNamespace: `parity-${parityCase.id}`,
-    primedCacheTtlSeconds: 60,
-    primedCacheDeterministicOnly: true,
+    ingestion: new IngestionRequest({
+      source: new IngestionSourceText({
+        _tag: "text",
+        text: parityCase.text
+      }),
+      format: "text"
+    }),
+    prompt: {
+      description: parityCase.promptDescription,
+      examples: parityCase.examples
+    },
+    annotate: {
+      maxCharBuffer: 500,
+      batchLength: 4,
+      batchConcurrency: 1,
+      providerConcurrency: 2,
+      extractionPasses: 1
+    },
+    cachePolicy: new PrimedCachePolicy({
+      enabled: false,
+      namespace: `parity-${parityCase.id}`,
+      ttlSeconds: 60,
+      deterministicOnly: true
+    }),
     clearPrimedCacheOnStart: false
   }).pipe(
-    Effect.map(normalizeAnnotatedDocument),
+    Effect.flatMap((documents) => {
+      const firstDocument = documents[0]
+      if (firstDocument === undefined) {
+        return Effect.fail(
+          new InferenceConfigError({
+            message: `Parity case '${parityCase.id}' produced zero documents.`
+          })
+        )
+      }
+      return Effect.succeed(normalizeAnnotatedDocument(firstDocument))
+    }),
     Effect.provide(makeRuntimeLayer(parityCase.modelOutput)),
     Effect.mapError(
       (error) =>

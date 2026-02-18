@@ -3,7 +3,7 @@ import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 
-import { executeVisualizeCommand } from "../../src/Cli.js"
+import { runVisualizeAdapter } from "../../src/cli/VisualizeAdapter.js"
 import {
   readTextFile,
   removeFile,
@@ -18,12 +18,12 @@ describe("CLI visualize command", () => {
       const outputPath = tempPath("cli-visualize", "visualization.html")
       yield* writeAnnotatedDocument(inputPath)
 
-      yield* executeVisualizeCommand({
+      yield* runVisualizeAdapter({
         input: inputPath,
         outputPath,
         animationSpeed: 0.5,
         showLegend: true
-      }).pipe(Effect.provide(BunFileSystem.layer))
+      }, false).pipe(Effect.provide(BunFileSystem.layer))
 
       const html = yield* readTextFile(outputPath)
       expect(html).toContain("<mark")
@@ -44,12 +44,12 @@ describe("CLI visualize command", () => {
       const outputPath = tempPath("cli-visualize", "visualization-no-legend.html")
       yield* writeAnnotatedDocument(inputPath)
 
-      yield* executeVisualizeCommand({
+      yield* runVisualizeAdapter({
         input: inputPath,
         outputPath,
         animationSpeed: 1.25,
         showLegend: false
-      }).pipe(Effect.provide(BunFileSystem.layer))
+      }, false).pipe(Effect.provide(BunFileSystem.layer))
 
       const html = yield* readTextFile(outputPath)
       expect(html).not.toContain("<ul class=\"lx-legend\"")
