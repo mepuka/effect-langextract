@@ -64,4 +64,23 @@ describe("ExtractionTarget", () => {
       })
     ).toThrowError(/invalid annotated examples/)
   })
+
+  it("escapes discriminator mapping refs for identifiers with / and ~", () => {
+    const Special = Schema.Struct({
+      value: Schema.String
+    }).annotations({
+      identifier: "foo/bar~baz",
+      examples: [{ value: "ok" }]
+    })
+
+    const target = ExtractionTarget.make({
+      classes: { "foo/bar~baz": Special },
+      description: "Extract special"
+    })
+
+    expect(target.jsonSchema).toHaveProperty(
+      "$defs.ExtractionTargetOutput.properties.extractions.items.discriminator.mapping.foo/bar~baz",
+      "#/$defs/foo~1bar~0bazExtractionRow"
+    )
+  })
 })

@@ -5,13 +5,14 @@ import * as HttpClientResponse from "@effect/platform/HttpClientResponse"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
 import * as BunContext from "@effect/platform-bun/BunContext"
 import { describe, expect, it } from "@effect/vitest"
-import { Chunk, Effect, Layer, Redacted, Schema, Stream } from "effect"
+import { Chunk, Effect, Layer, Redacted, Ref, Schema, Stream } from "effect"
 
 import {
   makeExtractionExecutionLayer
 } from "../../src/api/ExecutionLayer.js"
 import { extract, extractStream, extractTyped } from "../../src/api/Extraction.js"
 import { DocumentIdGenerator, ExampleData } from "../../src/Data.js"
+import { InferenceConfigError } from "../../src/Errors.js"
 import { ExtractionTarget } from "../../src/ExtractionTarget.js"
 import { ScoredOutput } from "../../src/FormatType.js"
 import { Ingestion } from "../../src/Ingestion.js"
@@ -33,48 +34,62 @@ const mockLanguageModelLayer = LanguageModel.testLayer({
     '[{"extractionClass":"snippet","extractionText":"Alice visited"}]'
 })
 
-const schemaModeLanguageModelLayer = Layer.succeed(
-  LanguageModel,
-  LanguageModel.make({
-    modelId: "schema-model",
-    requiresFenceOutput: false,
-    schema: undefined,
-    infer: (batchPrompts) =>
-      Effect.succeed(
-        batchPrompts.map(() => [
+const makeSchemaModeLanguageModelLayer = (options?: {
+  readonly response?: Record<string, unknown>
+  readonly capturedPrompts?: Ref.Ref<Array<string>>
+}) =>
+  Layer.succeed(
+    LanguageModel,
+    LanguageModel.make({
+      modelId: "schema-model",
+      requiresFenceOutput: false,
+      schema: undefined,
+      infer: (batchPrompts) =>
+        Effect.succeed(
+          batchPrompts.map(() => [
+            new ScoredOutput({
+              provider: "schema-mock",
+              output: "[]",
+              score: 1
+            })
+          ])
+        ),
+      generateText: (prompt) =>
+        Effect.succeed(
           new ScoredOutput({
             provider: "schema-mock",
-            output: "[]",
+            output: prompt,
             score: 1
           })
-        ])
-      ),
-    generateText: (prompt) =>
-      Effect.succeed(
-        new ScoredOutput({
-          provider: "schema-mock",
-          output: prompt,
-          score: 1
-        })
-      ),
-    generateObject: () =>
-      Effect.succeed({
-        extractions: [
-          {
-            extraction_class: "person",
-            extraction_text: "Alice",
-            data: { name: "Alice", age: 30 }
-          },
-          {
-            extractionClass: "person",
-            extractionText: "Invalid Person",
-            data: { name: "Invalid Person", age: "unknown" }
-          }
-        ]
-      }),
-    streamText: (prompt) => Stream.succeed(prompt)
-  })
-)
+        ),
+      generateObject: (prompt) =>
+        (options?.capturedPrompts !== undefined
+          ? Ref.update(options.capturedPrompts, (values) => [...values, prompt])
+          : Effect.void).pipe(
+          Effect.zipRight(
+            Effect.succeed(
+              options?.response ?? {
+                extractions: [
+                  {
+                    extraction_class: "person",
+                    extraction_text: "Alice",
+                    data: { name: "Alice", age: 30 }
+                  },
+                  {
+                    extractionClass: "person",
+                    extractionText: "Invalid Person",
+                    data: { name: "Invalid Person", age: "unknown" }
+                  }
+                ]
+              }
+            )
+          )
+        ),
+      streamText: (prompt) => Stream.succeed(prompt)
+    })
+  )
+
+const schemaModeLanguageModelLayer = makeSchemaModeLanguageModelLayer()
 
 const writeFile = (
   path: string,
@@ -100,17 +115,20 @@ const makeExtractionLayer = () =>
     }
   )
 
-const makeSchemaExtractionLayer = () =>
+const makeSchemaExtractionLayer = (
+  languageModelLayer: Layer.Layer<LanguageModel> = schemaModeLanguageModelLayer,
+  namespace = "test-schema"
+) =>
   makeExtractionExecutionLayer(
     {
       provider: "openai",
       modelId: "gpt-4o-mini",
       apiKey: Redacted.make(""),
       providerConcurrency: 8,
-      primedCacheNamespace: "test-schema"
+      primedCacheNamespace: namespace
     },
     {
-      languageModelLayer: schemaModeLanguageModelLayer,
+      languageModelLayer,
       primedCacheStoreLayer: KeyValueStore.layerMemory
     }
   )
@@ -347,5 +365,168 @@ describe("Extraction API", () => {
       ),
       Effect.asVoid
     )
+  )
+
+  it.effect("schema mode promptOverrides replace target prompt defaults", () =>
+    Effect.gen(function* () {
+      const capturedPrompts = yield* Ref.make([] as Array<string>)
+      const overrideLayer = Layer.mergeAll(
+        runtimeLayer,
+        Ingestion.Default,
+        DocumentIdGenerator.Default,
+        makeSchemaExtractionLayer(
+          makeSchemaModeLanguageModelLayer({
+            capturedPrompts,
+            response: {
+              extractions: [
+                {
+                  extractionClass: "person",
+                  extractionText: "Alice",
+                  data: { name: "Alice", age: 30 }
+                }
+              ]
+            }
+          }),
+          "schema-override"
+        )
+      )
+
+      const overrideExamples = [
+        new ExampleData({
+          text: "OVERRIDE EXAMPLE",
+          extractions: []
+        })
+      ]
+
+      const documents = yield* extractTyped({
+        ingestion: new IngestionRequest({
+          source: new IngestionSourceText({
+            _tag: "text",
+            text: "Alice visited Paris."
+          }),
+          format: "text"
+        }),
+        target: schemaTarget,
+        promptOverrides: {
+          description: "OVERRIDE DESCRIPTION",
+          examples: overrideExamples
+        },
+        annotate: {
+          maxCharBuffer: 1000,
+          batchLength: 10,
+          batchConcurrency: 1,
+          providerConcurrency: 8,
+          extractionPasses: 1
+        },
+        cachePolicy: new PrimedCachePolicy({
+          enabled: false,
+          namespace: "schema-override"
+        })
+      }).pipe(Effect.provide(overrideLayer))
+
+      expect(documents).toHaveLength(1)
+      const prompts = yield* Ref.get(capturedPrompts)
+      expect(prompts.length).toBeGreaterThan(0)
+      const prompt = prompts[0] ?? ""
+      expect(prompt).toContain("OVERRIDE DESCRIPTION")
+      expect(prompt).toContain("OVERRIDE EXAMPLE")
+      expect(prompt).not.toContain("Schema example 1 for person")
+    })
+  )
+
+  it.effect("schema mode rejects empty prompt override description", () =>
+    extract({
+      ingestion: new IngestionRequest({
+        source: new IngestionSourceText({
+          _tag: "text",
+          text: "Alice visited Paris."
+        }),
+        format: "text"
+      }),
+      target: schemaTarget,
+      promptOverrides: {
+        description: "   "
+      },
+      annotate: {
+        maxCharBuffer: 1000,
+        batchLength: 10,
+        batchConcurrency: 1,
+        providerConcurrency: 8,
+        extractionPasses: 1
+      },
+      cachePolicy: new PrimedCachePolicy({
+        enabled: false,
+        namespace: "schema-override"
+      })
+    }).pipe(
+      Effect.provide(schemaAppLayer),
+      Effect.flip,
+      Effect.tap((error) =>
+        Effect.sync(() => {
+          expect(error).toBeInstanceOf(InferenceConfigError)
+          expect((error as InferenceConfigError).message).toContain(
+            "Prompt override description must be non-empty"
+          )
+        })
+      ),
+      Effect.asVoid
+    )
+  )
+
+  it.effect("schema mode drops unknown extraction classes without failing", () =>
+    Effect.gen(function* () {
+      const unknownClassLayer = Layer.mergeAll(
+        runtimeLayer,
+        Ingestion.Default,
+        DocumentIdGenerator.Default,
+        makeSchemaExtractionLayer(
+          makeSchemaModeLanguageModelLayer({
+            response: {
+              extractions: [
+                {
+                  extractionClass: "organization",
+                  extractionText: "OpenAI",
+                  data: { name: "OpenAI" }
+                },
+                {
+                  extractionClass: "person",
+                  extractionText: "Alice",
+                  data: { name: "Alice", age: 30 }
+                }
+              ]
+            }
+          }),
+          "schema-unknown-class"
+        )
+      )
+
+      const documents = yield* extractTyped({
+        ingestion: new IngestionRequest({
+          source: new IngestionSourceText({
+            _tag: "text",
+            text: "Alice works at OpenAI."
+          }),
+          format: "text"
+        }),
+        target: schemaTarget,
+        annotate: {
+          maxCharBuffer: 1000,
+          batchLength: 10,
+          batchConcurrency: 1,
+          providerConcurrency: 8,
+          extractionPasses: 1
+        },
+        cachePolicy: new PrimedCachePolicy({
+          enabled: false,
+          namespace: "schema-unknown-class"
+        })
+      }).pipe(Effect.provide(unknownClassLayer))
+
+      expect(documents).toHaveLength(1)
+      const typed = documents[0]?.extractions ?? []
+      expect(typed).toHaveLength(1)
+      expect(typed[0]?.extractionClass).toBe("person")
+      expect(typed[0]?.data).toEqual({ name: "Alice", age: 30 })
+    })
   )
 })

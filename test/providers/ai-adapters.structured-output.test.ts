@@ -211,4 +211,89 @@ describe("AiAdapters structured output", () => {
       expect(putCall?.options.isDeterministic).toBe(true)
     })
   )
+
+  it.effect("propagates default provider metadata for batched infer calls", () =>
+    Effect.gen(function* () {
+      const { cache, captured } = yield* makeCapturingCache()
+
+      const nativeModel = {
+        generateText: ({ prompt }: { readonly prompt?: string }) =>
+          Effect.succeed({ text: String(prompt ?? "") }),
+        generateObject: () => Effect.succeed({ value: { ok: true } }),
+        streamText: () => Stream.empty
+      } as unknown as NativeLanguageModel.Service
+
+      const service = makeProviderLanguageModelService({
+        provider: "test-provider",
+        modelId: "test-model",
+        cache,
+        runtimeControl: RuntimeControl.make({
+          withProviderPermit: (_provider, effect) => effect
+        }),
+        nativeModel,
+        defaultProviderConcurrency: 2,
+        defaultProviderMetadata: {
+          temperature: 0.7,
+          formatType: "yaml"
+        }
+      })
+
+      yield* service.infer(["a", "b"], {
+        cachePolicy: new PrimedCachePolicy({
+          deterministicOnly: true,
+          namespace: "schema-test"
+        })
+      })
+
+      const calls = yield* Ref.get(captured)
+      expect(calls).toHaveLength(4)
+      for (const call of calls) {
+        expect(call.key.temperature).toBe(0.7)
+        expect(call.key.formatType).toBe("yaml")
+        expect(call.options.isDeterministic).toBe(false)
+      }
+    })
+  )
+
+  it.effect("propagates default provider metadata through object fallback cache path", () =>
+    Effect.gen(function* () {
+      const { cache, captured } = yield* makeCapturingCache()
+
+      const nativeModel = {
+        generateText: () =>
+          Effect.succeed({ text: JSON.stringify({ ok: true }) }),
+        generateObject: () => Effect.fail(new Error("object generation failed")),
+        streamText: () => Stream.empty
+      } as unknown as NativeLanguageModel.Service
+
+      const service = makeProviderLanguageModelService({
+        provider: "test-provider",
+        modelId: "test-model",
+        cache,
+        runtimeControl: RuntimeControl.make({
+          withProviderPermit: (_provider, effect) => effect
+        }),
+        nativeModel,
+        defaultProviderConcurrency: 1,
+        defaultProviderMetadata: {
+          temperature: 0.7,
+          formatType: "yaml"
+        }
+      })
+
+      const value = yield* service.generateObject("extract", {
+        cachePolicy: new PrimedCachePolicy({
+          deterministicOnly: true,
+          namespace: "schema-test"
+        })
+      })
+
+      expect(value).toEqual({ ok: true })
+      const [getCall, putCall] = yield* Ref.get(captured)
+      expect(getCall?.key.temperature).toBe(0.7)
+      expect(getCall?.key.formatType).toBe("yaml")
+      expect(getCall?.options.isDeterministic).toBe(false)
+      expect(putCall?.options.isDeterministic).toBe(false)
+    })
+  )
 })
