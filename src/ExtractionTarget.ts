@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import * as JSONSchema from "effect/JSONSchema"
 import * as AST from "effect/SchemaAST"
 
@@ -116,6 +116,11 @@ const astTypeLabel = (ast: AST.AST): string => {
       return astTypeLabel(ast.from)
     case "Transformation":
       return astTypeLabel(ast.to)
+    case "Declaration": {
+      const identifier = Option.getOrUndefined(AST.getIdentifierAnnotation(ast))
+      const firstParam = ast.typeParameters[0]
+      return identifier ?? (firstParam !== undefined ? astTypeLabel(firstParam) : "unknown")
+    }
     default:
       return "unknown"
   }
@@ -189,6 +194,12 @@ export const makeExtractionTarget = <Classes extends Record<string, ExtractionCl
   readonly classes: Classes
   readonly description: string
 }): ExtractionTarget<Classes> => {
+  if (Object.keys(options.classes).length === 0) {
+    throw new InferenceConfigError({
+      message: "ExtractionTarget requires at least one class. Received empty classes object."
+    })
+  }
+
   const classDefinitions: Record<
     string,
     ExtractionTargetClassDefinition<ExtractionClassSchema>
@@ -295,6 +306,17 @@ export const makeExtractionTarget = <Classes extends Record<string, ExtractionCl
 
 export const ExtractionTarget = {
   make: makeExtractionTarget,
+  makeEffect: <Classes extends Record<string, ExtractionClassSchema>>(options: {
+    readonly classes: Classes
+    readonly description: string
+  }): Effect.Effect<ExtractionTarget<Classes>, InferenceConfigError> =>
+    Effect.try({
+      try: () => makeExtractionTarget(options),
+      catch: (error) =>
+        error instanceof InferenceConfigError
+          ? error
+          : new InferenceConfigError({ message: `Failed to create ExtractionTarget: ${String(error)}` })
+    }),
   isExtractionTarget: (value: unknown): value is AnyExtractionTarget =>
     typeof value === "object"
     && value !== null

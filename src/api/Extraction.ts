@@ -3,7 +3,7 @@ import * as HttpClient from "@effect/platform/HttpClient"
 import { Chunk, Effect, Stream } from "effect"
 
 import { Annotator } from "../Annotator.js"
-import { AnnotatedDocument, DocumentIdGenerator, ExampleData } from "../Data.js"
+import { AnnotatedDocument, DocumentIdGenerator, ExampleData, Extraction } from "../Data.js"
 import type {
   AnyExtractionTarget,
   ExtractionClassSchema,
@@ -20,6 +20,7 @@ import { extractDocumentsStream } from "../ingestion/ExtractDocuments.js"
 import { IngestionRequest } from "../ingestion/Models.js"
 import { PrimedCache, PrimedCachePolicy } from "../PrimedCache.js"
 import {
+  SCHEMA_DATA_ATTRIBUTE_KEY,
   toTypedAnnotatedDocument,
   type TypedAnnotatedDocument
 } from "../TypedExtraction.js"
@@ -133,18 +134,48 @@ const resolvePromptConfig = (
   }
 }
 
-export const extractStream = (
-  request: ExtractRequest
-): Stream.Stream<
-  AnnotatedDocument,
-  ExtractApiError,
+const stripSchemaMarkers = (document: AnnotatedDocument): AnnotatedDocument => {
+  const hasMarkers = document.extractions.some(
+    (extraction) => extraction.attributes?.[SCHEMA_DATA_ATTRIBUTE_KEY] !== undefined
+  )
+  if (!hasMarkers) {
+    return document
+  }
+
+  return new AnnotatedDocument({
+    text: document.text,
+    ...(document.documentId !== undefined ? { documentId: document.documentId } : {}),
+    extractions: document.extractions.map((extraction) => {
+      if (extraction.attributes?.[SCHEMA_DATA_ATTRIBUTE_KEY] === undefined) {
+        return extraction
+      }
+      const { [SCHEMA_DATA_ATTRIBUTE_KEY]: _, ...remainingAttributes } = extraction.attributes ?? {}
+      return new Extraction({
+        extractionClass: extraction.extractionClass,
+        extractionText: extraction.extractionText,
+        ...(extraction.charInterval !== undefined ? { charInterval: extraction.charInterval } : {}),
+        ...(extraction.alignmentStatus !== undefined ? { alignmentStatus: extraction.alignmentStatus } : {}),
+        ...(extraction.extractionIndex !== undefined ? { extractionIndex: extraction.extractionIndex } : {}),
+        ...(extraction.groupIndex !== undefined ? { groupIndex: extraction.groupIndex } : {}),
+        ...(extraction.description !== undefined ? { description: extraction.description } : {}),
+        ...(extraction.tokenInterval !== undefined ? { tokenInterval: extraction.tokenInterval } : {}),
+        ...(Object.keys(remainingAttributes).length > 0 ? { attributes: remainingAttributes } : {})
+      })
+    })
+  })
+}
+
+type ExtractStreamDependencies =
   | Ingestion
   | Annotator
   | PrimedCache
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | DocumentIdGenerator
-> =>
+
+const extractStreamRaw = (
+  request: ExtractRequest
+): Stream.Stream<AnnotatedDocument, ExtractApiError, ExtractStreamDependencies> =>
   Stream.unwrap(
     Effect.gen(function* () {
       yield* validateRequest(request)
@@ -185,6 +216,11 @@ export const extractStream = (
     })
   )
 
+export const extractStream = (
+  request: ExtractRequest
+): Stream.Stream<AnnotatedDocument, ExtractApiError, ExtractStreamDependencies> =>
+  extractStreamRaw(request).pipe(Stream.map(stripSchemaMarkers))
+
 export const extract = (
   request: ExtractRequest
 ): Effect.Effect<
@@ -218,17 +254,29 @@ export const extractTyped = <Classes extends Record<string, ExtractionClassSchem
 ): Effect.Effect<
   ReadonlyArray<TypedAnnotatedDocument<Classes>>,
   ExtractApiError,
-  | Ingestion
-  | Annotator
-  | PrimedCache
-  | FileSystem.FileSystem
-  | HttpClient.HttpClient
-  | DocumentIdGenerator
+  ExtractStreamDependencies
 > =>
-  extract(request).pipe(
-    Effect.flatMap((documents) =>
-      Effect.forEach(documents, (document) =>
+  extractStreamRaw(request).pipe(
+    Stream.runCollect,
+    Effect.map(Chunk.toReadonlyArray),
+    Effect.flatMap((documents) => {
+      const requireNonEmptyResult = request.requireNonEmptyResult ?? true
+      if (requireNonEmptyResult && documents.length === 0) {
+        return Effect.fail(
+          new InferenceConfigError({
+            message: "Ingestion produced zero documents."
+          })
+        )
+      }
+      return Effect.forEach(documents, (document) =>
         toTypedAnnotatedDocument<Classes>(document, request.target)
       )
-    )
+    })
+  )
+
+export const extractTypedStream = <Classes extends Record<string, ExtractionClassSchema>>(
+  request: SchemaExtractRequest<ExtractionTarget<Classes>>
+): Stream.Stream<TypedAnnotatedDocument<Classes>, ExtractApiError, ExtractStreamDependencies> =>
+  extractStreamRaw(request).pipe(
+    Stream.mapEffect((doc) => toTypedAnnotatedDocument<Classes>(doc, request.target))
   )

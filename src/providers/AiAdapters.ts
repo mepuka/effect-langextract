@@ -1,5 +1,6 @@
 import * as NativeLanguageModel from "@effect/ai/LanguageModel"
 import { Clock, Effect, Schema, Stream } from "effect"
+import * as JSONSchema from "effect/JSONSchema"
 
 import { InferenceRuntimeError } from "../Errors.js"
 import { type FormatType, ScoredOutput } from "../FormatType.js"
@@ -97,7 +98,7 @@ const cacheKeyForPrompt = (
     ...(options?.structuredOutput !== undefined
       ? {
           schemaFingerprint: fnv1aHash(
-            String(options.structuredOutput.schema.ast)
+            JSON.stringify(JSONSchema.make(options.structuredOutput.schema))
           )
         }
       : {}),

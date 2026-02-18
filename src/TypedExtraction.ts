@@ -37,13 +37,14 @@ export interface TypedAnnotatedDocument<Classes extends ClassMap> {
 export const encodeSchemaDataMarker = (
   data: unknown
 ): Effect.Effect<string, never> =>
-  Effect.sync(() => {
-    try {
-      return Schema.encodeSync(JsonString)(data)
-    } catch {
-      return "{}"
-    }
-  })
+  Schema.encode(JsonString)(data).pipe(
+    Effect.catchAll((error) =>
+      Effect.logWarning("langextract.typed_extraction.encode_marker_failed").pipe(
+        Effect.annotateLogs({ error: String(error), fallback: "{}" }),
+        Effect.as("{}")
+      )
+    )
+  )
 
 export const decodeSchemaDataMarker = (
   encoded: string

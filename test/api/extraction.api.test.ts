@@ -10,7 +10,7 @@ import { Chunk, Effect, Layer, Redacted, Ref, Schema, Stream } from "effect"
 import {
   makeExtractionExecutionLayer
 } from "../../src/api/ExecutionLayer.js"
-import { extract, extractStream, extractTyped } from "../../src/api/Extraction.js"
+import { extract, extractStream, extractTyped, extractTypedStream } from "../../src/api/Extraction.js"
 import { DocumentIdGenerator, ExampleData } from "../../src/Data.js"
 import { InferenceConfigError } from "../../src/Errors.js"
 import { ExtractionTarget } from "../../src/ExtractionTarget.js"
@@ -521,6 +521,170 @@ describe("Extraction API", () => {
           namespace: "schema-unknown-class"
         })
       }).pipe(Effect.provide(unknownClassLayer))
+
+      expect(documents).toHaveLength(1)
+      const typed = documents[0]?.extractions ?? []
+      expect(typed).toHaveLength(1)
+      expect(typed[0]?.extractionClass).toBe("person")
+      expect(typed[0]?.data).toEqual({ name: "Alice", age: 30 })
+    })
+  )
+
+  it.effect("multi-class target routes extractions by discriminator", () =>
+    Effect.gen(function* () {
+      const LocationSchema = Schema.Struct({
+        city: Schema.String,
+        country: Schema.String
+      }).annotations({
+        identifier: "location",
+        description: "A location mention",
+        examples: [{ city: "Paris", country: "France" }]
+      })
+
+      const multiTarget = ExtractionTarget.make({
+        classes: { person: PersonSchema, location: LocationSchema },
+        description: "Extract people and locations"
+      })
+
+      const multiClassLayer = Layer.mergeAll(
+        runtimeLayer,
+        Ingestion.Default,
+        DocumentIdGenerator.Default,
+        makeSchemaExtractionLayer(
+          makeSchemaModeLanguageModelLayer({
+            response: {
+              extractions: [
+                {
+                  extractionClass: "person",
+                  extractionText: "Alice",
+                  data: { name: "Alice", age: 30 }
+                },
+                {
+                  extractionClass: "location",
+                  extractionText: "Paris",
+                  data: { city: "Paris", country: "France" }
+                }
+              ]
+            }
+          }),
+          "schema-multi-class"
+        )
+      )
+
+      const documents = yield* extractTyped({
+        ingestion: new IngestionRequest({
+          source: new IngestionSourceText({
+            _tag: "text",
+            text: "Alice visited Paris in France."
+          }),
+          format: "text"
+        }),
+        target: multiTarget,
+        annotate: {
+          maxCharBuffer: 1000,
+          batchLength: 10,
+          batchConcurrency: 1,
+          providerConcurrency: 8,
+          extractionPasses: 1
+        },
+        cachePolicy: new PrimedCachePolicy({
+          enabled: false,
+          namespace: "schema-multi-class"
+        })
+      }).pipe(Effect.provide(multiClassLayer))
+
+      expect(documents).toHaveLength(1)
+      const typed = documents[0]?.extractions ?? []
+      expect(typed).toHaveLength(2)
+
+      const person = typed.find((e) => e.extractionClass === "person")
+      expect(person?.data).toEqual({ name: "Alice", age: 30 })
+
+      const location = typed.find((e) => e.extractionClass === "location")
+      expect(location?.data).toEqual({ city: "Paris", country: "France" })
+    })
+  )
+
+  it.effect("extract() strips __schemaDataJson marker from output attributes", () =>
+    Effect.gen(function* () {
+      const documents = yield* extract({
+        ingestion: new IngestionRequest({
+          source: new IngestionSourceText({
+            _tag: "text",
+            text: "Alice visited Paris."
+          }),
+          format: "text"
+        }),
+        target: schemaTarget,
+        annotate: {
+          maxCharBuffer: 1000,
+          batchLength: 10,
+          batchConcurrency: 1,
+          providerConcurrency: 8,
+          extractionPasses: 1
+        },
+        cachePolicy: new PrimedCachePolicy({
+          enabled: false,
+          namespace: "schema-marker-strip"
+        })
+      }).pipe(Effect.provide(schemaAppLayer))
+
+      expect(documents).toHaveLength(1)
+      for (const doc of documents) {
+        for (const extraction of doc.extractions) {
+          expect(extraction.attributes?.["__schemaDataJson"]).toBeUndefined()
+        }
+      }
+    })
+  )
+
+  it.effect("extractTypedStream yields typed documents incrementally", () =>
+    Effect.gen(function* () {
+      const streamLayer = Layer.mergeAll(
+        runtimeLayer,
+        Ingestion.Default,
+        DocumentIdGenerator.Default,
+        makeSchemaExtractionLayer(
+          makeSchemaModeLanguageModelLayer({
+            response: {
+              extractions: [
+                {
+                  extractionClass: "person",
+                  extractionText: "Alice",
+                  data: { name: "Alice", age: 30 }
+                }
+              ]
+            }
+          }),
+          "schema-typed-stream"
+        )
+      )
+
+      const documents = yield* extractTypedStream({
+        ingestion: new IngestionRequest({
+          source: new IngestionSourceText({
+            _tag: "text",
+            text: "Alice visited Paris."
+          }),
+          format: "text"
+        }),
+        target: schemaTarget,
+        annotate: {
+          maxCharBuffer: 1000,
+          batchLength: 10,
+          batchConcurrency: 1,
+          providerConcurrency: 8,
+          extractionPasses: 1
+        },
+        cachePolicy: new PrimedCachePolicy({
+          enabled: false,
+          namespace: "schema-typed-stream"
+        })
+      }).pipe(
+        Stream.runCollect,
+        Effect.map(Chunk.toReadonlyArray),
+        Effect.provide(streamLayer)
+      )
 
       expect(documents).toHaveLength(1)
       const typed = documents[0]?.extractions ?? []

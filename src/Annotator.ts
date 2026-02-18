@@ -306,6 +306,10 @@ const resolveSchemaExtractions = (
     )
   })
 
+// Schema mode intentionally bypasses the PromptBuilder service. When
+// promptDescription/promptExamples are set (always the case for schema
+// targets), the prompt is assembled inline from description + examples +
+// chunk text. The PromptBuilder is only used for legacy free-form prompts.
 const buildPromptForChunk = (
   chunk: TextChunk,
   options: AnnotateOptions,
