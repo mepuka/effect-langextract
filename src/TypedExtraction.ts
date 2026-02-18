@@ -73,12 +73,25 @@ export const toTypedAnnotatedDocument = <Classes extends ClassMap>(
 
       const schema = target.classSchemasByIdentifier[extraction.extractionClass]
       if (schema === undefined) {
+        yield* Effect.logWarning("langextract.typed_extraction.unknown_class").pipe(
+          Effect.annotateLogs({
+            extractionClass: extraction.extractionClass,
+            extractionText: extraction.extractionText.slice(0, 80)
+          })
+        )
         continue
       }
 
       const decodedMarker = yield* decodeSchemaDataMarker(marker)
       const decoded = Schema.decodeUnknownEither(schema)(decodedMarker)
       if (decoded._tag === "Left") {
+        yield* Effect.logWarning("langextract.typed_extraction.schema_validation_failed").pipe(
+          Effect.annotateLogs({
+            extractionClass: extraction.extractionClass,
+            extractionText: extraction.extractionText.slice(0, 80),
+            error: String(decoded.left)
+          })
+        )
         continue
       }
 
